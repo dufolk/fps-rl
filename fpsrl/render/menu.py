@@ -11,6 +11,7 @@ from direct.gui.OnscreenImage import OnscreenImage
 from panda3d.core import (AmbientLight, Camera, DirectionalLight, NodePath, PerspectiveLens, TextNode,
                           TransparencyAttrib, Vec4, WindowProperties)
 
+from ..profile import SENSITIVITY_MAX, SENSITIVITY_MIN, SENSITIVITY_STEP, clamp_sensitivity
 from ..weapons import WEAPONS
 from .hud import load_font
 from .skins import RARITY, SKIN_WEAPONS, SKINS, get_skin
@@ -89,6 +90,47 @@ class UI:
                          relief=DGG.FLAT)
         s["command"] = lambda: command(s["value"])
         return s
+
+
+class SliderRow:
+    """Label, −, slider, +, and the current number. Used for mouse sensitivity."""
+
+    def __init__(self, ui: UI, parent, label, value, z, on_change, label_x=-1.0, minus_x=0.02,
+                 slider_x=0.4, slider_w=0.26, plus_x=0.78, value_x=1.02, label_scale=0.042):
+        self.on_change = on_change
+        self._mute = False
+        self.value = clamp_sensitivity(value)
+        ui.label(parent, label, (label_x, z - 0.015), label_scale, DIM)
+        ui.button(parent, "-", (minus_x, z), self._step, (0.04, 0.04), 0.05, [-1])
+        self.slider = ui.slider(parent, self.value, (SENSITIVITY_MIN, SENSITIVITY_MAX),
+                                (slider_x, z + 0.015), self._from_slider, slider_w)
+        ui.button(parent, "+", (plus_x, z), self._step, (0.04, 0.04), 0.05, [1])
+        self.text = ui.label(parent, "", (value_x, z - 0.015), label_scale, WHITE, TextNode.ARight)
+        self._show()
+
+    def _show(self):
+        self.text["text"] = f"{self.value:.2f}"
+
+    def _from_slider(self, v):
+        if self._mute:
+            return
+        self.value = clamp_sensitivity(v)
+        self._show()
+        self.on_change(self.value)
+
+    def _step(self, d):
+        self.set(self.value + d * SENSITIVITY_STEP)
+
+    def set(self, value, notify=True):
+        value = clamp_sensitivity(value)
+        changed = abs(value - self.value) > 1e-9
+        self.value = value
+        self._mute = True
+        self.slider["value"] = value
+        self._mute = False
+        self._show()
+        if notify and changed:
+            self.on_change(self.value)
 
 
 class Cycle:
@@ -461,14 +503,11 @@ class MainMenu:
             prof.save()
         name["command"] = set_name
         name["focusOutCommand"] = set_name
-        sens_lbl = ui.label(page, "", (0.98, 0.265), 0.042, WHITE, TextNode.ARight)
 
         def on_sens(v):
-            prof.sensitivity = round(v, 2)
-            sens_lbl["text"] = f"{prof.sensitivity:.2f}"
-        ui.label(page, L("鼠标灵敏度", "Mouse sensitivity"), (-1.0, 0.265), 0.042, DIM)
-        ui.slider(page, prof.sensitivity, (0.2, 6.0), (0.4, 0.28), on_sens)
-        on_sens(prof.sensitivity)
+            prof.sensitivity = v
+            prof.save()
+        SliderRow(ui, page, L("鼠标灵敏度", "Mouse sensitivity"), prof.sensitivity, 0.28, on_sens)
         vol_lbl = ui.label(page, "", (0.98, 0.145), 0.042, WHITE, TextNode.ARight)
 
         def on_vol(v):
@@ -525,14 +564,14 @@ class PauseMenu:
         self.root = base.aspect2d.attachNewNode("pause")
         self.root.setBin("gui-popup", 50)
         DirectFrame(parent=self.root, frameColor=(0, 0, 0, 0.55), frameSize=(-4, 4, -1, 1))
-        DirectFrame(parent=self.root, frameColor=PANEL, frameSize=(-0.6, 0.6, -0.52, 0.5))
+        DirectFrame(parent=self.root, frameColor=PANEL, frameSize=(-0.68, 0.68, -0.52, 0.5))
         ui.label(self.root, L("暂停", "PAUSED"), (0, 0.36), 0.075, ACCENT, TextNode.ACenter)
         self.room_lbl = ui.label(self.root, "", (0, 0.29), 0.034, DIM, TextNode.ACenter)
         ui.button(self.root, L("继续游戏", "Resume"), (0, 0.17), app.toggle_pause, (0.4, 0.055), 0.048)
         prof = app.profile
-        self.sens_lbl = ui.label(self.root, "", (0.5, 0.035), 0.04, WHITE, TextNode.ARight)
-        ui.label(self.root, L("灵敏度", "Sensitivity"), (-0.5, 0.035), 0.04, DIM)
-        self.sens = ui.slider(self.root, prof.sensitivity, (0.2, 6.0), (0.05, 0.05), self._on_sens, 0.22)
+        self.sens = SliderRow(ui, self.root, L("灵敏度", "Sensitivity"), prof.sensitivity, 0.05, self._on_sens,
+                              label_x=-0.55, minus_x=-0.12, slider_x=0.12, slider_w=0.14, plus_x=0.36,
+                              value_x=0.55, label_scale=0.04)
         self.vol_lbl = ui.label(self.root, "", (0.5, -0.075), 0.04, WHITE, TextNode.ARight)
         ui.label(self.root, L("音量", "Volume"), (-0.5, -0.075), 0.04, DIM)
         self.vol = ui.slider(self.root, prof.volume, (0.0, 1.0), (0.05, -0.06), self._on_vol, 0.22)
@@ -542,8 +581,8 @@ class PauseMenu:
         self.root.hide()
 
     def _on_sens(self, v):
-        self.app.profile.sensitivity = round(v, 2)
-        self.sens_lbl["text"] = f"{self.app.profile.sensitivity:.2f}"
+        self.app.profile.sensitivity = v
+        self.app.profile.save()
 
     def _on_vol(self, v):
         self.app.profile.volume = round(v, 2)
@@ -552,9 +591,8 @@ class PauseMenu:
 
     def show(self, room_text=""):
         prof = self.app.profile
-        self.sens["value"] = prof.sensitivity
+        self.sens.set(prof.sensitivity, notify=False)
         self.vol["value"] = prof.volume
-        self._on_sens(prof.sensitivity)
         self._on_vol(prof.volume)
         self.room_lbl["text"] = room_text
         self.visible = True

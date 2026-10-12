@@ -7,6 +7,13 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 
 PROFILE_PATH = os.path.join(os.path.expanduser("~"), ".fpsrl", "profile.json")
+SENSITIVITY_MIN = 0.1
+SENSITIVITY_MAX = 12.0
+SENSITIVITY_STEP = 0.1
+
+
+def clamp_sensitivity(value) -> float:
+    return max(SENSITIVITY_MIN, min(SENSITIVITY_MAX, round(float(value), 2)))
 
 
 def _default_name():
@@ -55,6 +62,7 @@ class Profile:
                 setattr(p, k, type(cur)(v))
             elif isinstance(cur, str) and isinstance(v, str):
                 setattr(p, k, v)
+        p.sensitivity = clamp_sensitivity(p.sensitivity)
         return p
 
     def save(self, path: str = PROFILE_PATH):

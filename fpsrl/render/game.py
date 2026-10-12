@@ -18,6 +18,7 @@ from direct.showbase.DirectObject import DirectObject
 from panda3d.core import Filename, KeyboardButton, MouseButton, WindowProperties
 
 from ..bots import Bot
+from ..profile import SENSITIVITY_STEP, clamp_sensitivity
 from ..net.protocol import (B_ALT, B_FIRE, B_RELOAD, apply_agent, apply_world, encode_input, input_to_action,
                             world_state)
 from ..sim import TEAM_NAMES, Action, MatchConfig, World
@@ -84,7 +85,7 @@ class PlayerController:
         ev.accept("f4", self._toggle_fps)
         ev.accept("f5", self._restart)
         ev.accept("f12", lambda: base.screenshot(namePrefix="fpsrl_screenshot"))
-        for k, d in (("+", 0.1), ("=", 0.1), ("-", -0.1)):
+        for k, d in (("+", SENSITIVITY_STEP), ("=", SENSITIVITY_STEP), ("-", -SENSITIVITY_STEP)):
             ev.accept(k, self._sens, [d])
         ev.accept("tab", self._board, [True])
         ev.accept("tab-up", self._board, [False])
@@ -193,8 +194,11 @@ class PlayerController:
             self.on_restart()
 
     def _sens(self, d):
-        self.settings.sensitivity = max(0.1, round(self.settings.sensitivity + d, 2))
+        self.settings.sensitivity = clamp_sensitivity(self.settings.sensitivity + d)
         self.info(f"{'灵敏度' if self.zh else 'Sensitivity'}: {self.settings.sensitivity:.2f}")
+        save = getattr(self.settings, "save", None)
+        if save is not None:
+            save()
 
     def _board(self, show):
         self.viewer.show_board = show and self.enabled
