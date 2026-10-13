@@ -11,6 +11,27 @@ from .base import Box
 SOLID = None
 
 
+def rect_minus(outer, holes):
+    """Split rectangle `outer` (x0, y0, x1, y1) minus `holes` into a few disjoint rectangles."""
+    x0, y0, x1, y1 = outer
+    xs = sorted({x0, x1, *[min(max(h[0], x0), x1) for h in holes], *[min(max(h[2], x0), x1) for h in holes]})
+    ys = sorted({y0, y1, *[min(max(h[1], y0), y1) for h in holes], *[min(max(h[3], y0), y1) for h in holes]})
+    cols, rows = len(xs) - 1, len(ys) - 1
+    grid = []
+    for r in range(rows):
+        row = []
+        cy = (ys[r] + ys[r + 1]) / 2
+        for c in range(cols):
+            cx = (xs[c] + xs[c + 1]) / 2
+            inside = any(h[0] < cx < h[2] and h[1] < cy < h[3] for h in holes)
+            row.append("skip" if inside else 1)
+        grid.append(row)
+    out = []
+    for c0, c1, r0, r1, _ in GridMap._merge(grid, rows, cols):
+        out.append((xs[c0], ys[r0], xs[c1 + 1], ys[r1 + 1]))
+    return out
+
+
 class GridMap:
     def __init__(self, cols: int, rows: int, cell: float, x0: float, y1: float):
         """Column 0 starts at x0 (west), row 0 starts at y1 (north edge), rows grow southwards."""

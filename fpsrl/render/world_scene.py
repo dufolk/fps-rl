@@ -217,8 +217,10 @@ class WorldScene:
             mb = groups.setdefault(mat, MeshBuilder(mat))
             scale = UV_SCALE.get(mat, 0.5)
             skip = ()
-            if b.tag in ("deck", "ground"):
+            if b.tag in ("deck", "ground", "slab"):
                 skip = ("-z",)
+            elif b.tag == "ceiling":
+                skip = ("+z",)
             mb.box(b.mn, b.mx, (1, 1, 1, 1), uv_mode="world" if not mat.startswith("crate") else "local",
                    uv_scale=scale, skip=skip)
         for mat, mb in groups.items():
@@ -373,7 +375,7 @@ class WorldScene:
         elif theme == "town":
             for k in range(30):
                 a = k / 30 * math.tau
-                r = r0 + rng.uniform(60, 160)
+                r = r0 + rng.uniform(150, 240)
                 h = rng.uniform(20, 55)
                 mb.sphere((cx + math.cos(a) * r, cy + math.sin(a) * r, -h * 0.3), rng.uniform(50, 90),
                           (0.22, 0.34, 0.18, 1), 6, 10, scale=(1.0, 1.0, h / 70))

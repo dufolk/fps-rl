@@ -25,7 +25,7 @@ class NavGrid:
     MAX_LAYERS = 6
 
     def __init__(self, world: World, cell: float = 0.5, max_floor: float | None = None,
-                 clearance: float = 0.36):
+                 clearance: float = C.PLAYER_RADIUS + 0.02):
         (x0, y0), (x1, y1) = world.map.bounds
         if max_floor is None:
             max_floor = world.map.nav_max_floor
