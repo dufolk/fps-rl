@@ -146,7 +146,7 @@ def test_siege_operator_reinforce_breach():
     assert apply_client_cmd(w, dfn, {"t": "cmd", "c": "operator", "v": DEFENDERS[-1]})
     assert dfn.operator == DEFENDERS[-1]
 
-    target = Bot(w, dfn.id)._reinforce_target(m, dfn)
+    target = Bot(w, dfn.id)._wall_target(m, dfn, m.active_sites, outside=False)
     assert target is not None, "no reinforceable wall near the active sites"
     pid, stand, look = target
     dfn.pos[:] = dfn.prev_pos[:] = stand + (0.0, 0.0, 0.02)

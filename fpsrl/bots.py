@@ -10,12 +10,12 @@ from .geometry import point_in_poly, poly_center
 from .modes.rounds import ATT, DEF, RoundMode
 from .nav import NavGrid
 from .sim import IDLE, Action, Agent, World, angles_to, wrap180
-from .weapons import SLOT_BOMB, SLOT_FRAG, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY, SLOT_SMOKE
+from .weapons import SLOT_BOMB, SLOT_FRAG, SLOT_GADGET, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY, SLOT_SMOKE
 
 DIFFICULTY_LEVELS = {"easy": 0.2, "normal": 0.5, "hard": 0.85, "insane": 1.0}
 # tasks the bot keeps doing even when it hears / remembers enemies
-FORCED_TASKS = ("plant", "defuse", "fetch", "reinforce")
-BUSY_TASKS = ("plant", "defuse", "reinforce", "barricade")
+FORCED_TASKS = ("plant", "defuse", "fetch", "reinforce", "breach")
+BUSY_TASKS = ("plant", "defuse", "reinforce", "barricade", "place")
 
 
 class Bot:
@@ -75,6 +75,11 @@ class Bot:
         self.task_data = None
         self.stuck_n = 0
         self.bash_until = 0.0
+        self.breached = None  # round uid in which this bot is done breaching
+        self.drone_path: list[np.ndarray] = []
+        self.drone_i = 0
+        self.drone_replan = 0.0
+        self.drone_last = (0.0, np.zeros(3))
 
     @property
     def agent(self) -> Agent:
@@ -217,6 +222,15 @@ class Bot:
             site = self._team_site(m, a.team)
             if site < 0:
                 return None, None, 0.0
+            slot = self._breach_tool(a)
+            if m.name == "r6" and slot is not None and self.breached != m.round_uid:
+                t = self.task_data if self.task == "breach" else None
+                if t is None or not self.world.destruct.panels[t[0]].alive:
+                    t = self._wall_target(m, a, [site], outside=True, hard=a.inv[slot].name == "thermite")
+                if t is not None:
+                    self.task_data = t
+                    return t[1], "breach", 1.0
+                self.breached = m.round_uid
             return self._zone_point(m.sites[site], 0.45), "push", 0.8
         # defenders
         if m.phase == "planted" and b is not None:
@@ -224,7 +238,7 @@ class Bot:
         if m.phase == "prep" and getattr(m, "reinforce_left", 0) > 0:
             t = self.task_data if self.task == "reinforce" else None
             if t is None or not self.world.destruct.panel_soft(t[0]):
-                t = self._reinforce_target(m, a)
+                t = self._wall_target(m, a, m.active_sites, outside=False)
             if t is not None:
                 self.task_data = t
                 return t[1], "reinforce", 1.0
@@ -235,17 +249,19 @@ class Bot:
         bias = 0.9 if m.name == "r6" else 0.65
         return self._zone_point(m.sites[site], 0.4), "hold", bias
 
-    def _reinforce_target(self, m, a):
-        """(panel id, stand point, look point) of an unreinforced wall next to an active site."""
+    def _wall_target(self, m, a, sites, outside: bool, hard: bool = False):
+        """(panel id, stand point, look point) of a soft wall next to one of `sites`, approached from
+        the site side (defenders reinforcing) or from outside (attackers breaching). Each wall is
+        claimed by one bot per round and team."""
         w = self.world
-        claimed = Bot._plans.setdefault((m.round_uid, "reinf"), set())
+        claimed = Bot._plans.setdefault((m.round_uid, a.team, "walls"), set())
         best, best_d = None, 1e9
-        for si in m.active_sites:
+        for si in sites:
             zone = m.sites[si]
             c = m.site_centers[si]
             zf = zone.get("z", zone.get("zmin", -0.5) + 0.5)
             for p in w.destruct.panels:
-                if p.axis == 2 or not p.alive or p.reinforced or p.wall in claimed:
+                if p.axis == 2 or not p.alive or (p.reinforced and not hard) or p.wall in claimed:
                     continue
                 if not (zf + 0.8 < p.center[2] < zf + 2.2):
                     continue
@@ -253,13 +269,14 @@ class Bot:
                 if d > 10.0:
                     continue
                 n = np.zeros(3)
-                n[p.axis] = 1.0 if c[p.axis] > p.center[p.axis] else -1.0
+                n[p.axis] = 1.0 if (c[p.axis] > p.center[p.axis]) != outside else -1.0
                 stand = p.center + n * 0.85
                 stand[2] = zf
                 node = self.nav.nearest_cell(stand)
                 if node < 0 or np.linalg.norm(self.nav.nodes[node] - stand) > 0.45:
                     continue
-                dd = d + 0.3 * math.hypot(stand[0] - a.pos[0], stand[1] - a.pos[1])
+                far = math.hypot(stand[0] - a.pos[0], stand[1] - a.pos[1])
+                dd = 0.5 * d + far if outside else d + 0.3 * far
                 if dd < best_d:
                     best, best_d = (p, stand), dd
         if best is None:
@@ -267,8 +284,37 @@ class Bot:
         p, stand = best
         claimed.add(p.wall)
         look = p.center.copy()
-        look[2] = stand[2] + C.STAND_HEIGHT - C.EYE_FROM_TOP
+        look[2] = stand[2] + (C.STAND_HEIGHT - C.EYE_FROM_TOP if not outside else 1.0)
         return p.id, stand, look
+
+    def _breach_tool(self, a):
+        """Slot of the bot's best wall breaching item with charges left, else None."""
+        for slot in (SLOT_GADGET, SLOT_SMOKE):
+            ws = a.inv.get(slot)
+            if ws is not None and ws.name in ("thermite", "hammer", "breach") and ws.mag > 0:
+                return slot
+        return None
+
+    def _work_at(self, a: Agent, act: Action, dt: float, stand, look):
+        """Walk onto `stand` and face `look`. None while still out of reach (let the path finder
+        steer), else whether the bot stands in place and is aimed."""
+        off = stand - a.pos
+        dist = math.hypot(off[0], off[1])
+        if dist > 1.5:
+            return None
+        yaw, pitch = angles_to(a.eye(), look)
+        dyaw, dpitch, ey, ep = self._turn_towards(a, yaw, pitch, dt, 12.0)
+        act.look_yaw, act.look_pitch = dyaw, dpitch
+        if dist > 0.3:
+            yaw_saved = a.yaw
+            a.yaw = (a.yaw + dyaw) % 360.0
+            fwd, right = self._move_axes(a, off)
+            a.yaw = yaw_saved
+            act.move_forward, act.move_right = fwd * 0.5, right * 0.5
+            act.walk = True
+            return False
+        act.move_forward = act.move_right = 0.0
+        return abs(ey) < 4.0 and abs(ep) < 4.0
 
     def _task_act(self, a: Agent, act: Action, dt: float) -> bool:
         """Carry out the current task once in place. Returns True when it took over the controls."""
@@ -302,25 +348,83 @@ class Bot:
                 self.task = None
                 self.replan_at = w.time
                 return False
-            off = stand - a.pos
-            dist = math.hypot(off[0], off[1])
-            if dist > 1.5:
+            ready = self._work_at(a, act, dt, stand, look)
+            if ready is None:
                 return False
-            yaw, pitch = angles_to(a.eye(), look)
-            dyaw, dpitch, ey, ep = self._turn_towards(a, yaw, pitch, dt, 12.0)
-            act.look_yaw, act.look_pitch = dyaw, dpitch
-            if dist > 0.3:
-                yaw_saved = a.yaw
-                a.yaw = (a.yaw + dyaw) % 360.0
-                fwd, right = self._move_axes(a, off)
-                a.yaw = yaw_saved
-                act.move_forward, act.move_right = fwd * 0.5, right * 0.5
-                act.walk = True
-                return True
-            act.move_forward = act.move_right = 0.0
-            act.use = abs(ey) < 4.0 and abs(ep) < 4.0 and not a.prev_use
+            act.use = ready and not a.prev_use
+            return True
+        if task == "breach":
+            pid, stand, look = self.task_data
+            p = w.destruct.panels[pid]
+            slot = self._breach_tool(a)
+            placed = any(it["kind"] == "charge" and it["owner"] == a.id for it in w.gadgets.items.values())
+            if not p.alive or slot is None or placed:
+                # done: back off from the charge, then push through the hole
+                self.breached = m.round_uid
+                self.task = None
+                away = stand + (stand - p.center) * np.array([1.0, 1.0, 0.0]) * 3.0
+                self._plan(away)
+                self.replan_at = w.time + (2.5 if placed else 0.3)
+                return False
+            ready = self._work_at(a, act, dt, stand, look)
+            if ready is None:
+                return False
+            if a.slot != slot:
+                act.switch = slot
+            elif ready and w.time >= a.ready_at:
+                act.fire = not a.prev_fire
             return True
         return False
+
+    def _drone_act(self, a: Agent) -> Action:
+        """Siege attackers in the prep phase: drive a drone towards the team's site and spot
+        defenders on the way. Leaves the drone view once the round goes live."""
+        w = self.world
+        m = w.mode
+        g = w.gadgets
+        if m.phase != "prep" or m.side(a.team) != ATT:
+            return Action(gadget=bool(a.view_mode) and not a.prev_gadget)
+        if w.time >= self.replan_at:
+            self._plan(self._pick_goal())
+        if not a.view_mode:
+            start = m.phase_end - m.p["prep_time"] + 0.5 + (a.id % 3)
+            if g.drones_left.get(a.id, 0) <= 0 or w.time < start:
+                return IDLE
+            self.drone_path = []
+            return Action(gadget=not a.prev_gadget)
+        it = g.items.get(a.view_ref)
+        if it is None:
+            return IDLE
+        pos = it["pos"]
+        act = Action()
+        if not self.drone_path or self.drone_i >= len(self.drone_path) or w.time >= self.drone_replan:
+            goal = self._zone_point(m.sites[self._team_site(m, a.team)], 0.4)
+            self.drone_path = self.nav.find_path(pos, goal)
+            self.drone_i = 1 if len(self.drone_path) > 1 else 0
+            self.drone_replan = w.time + 6.0
+        if self.drone_i < len(self.drone_path):
+            d = self.drone_path[self.drone_i] - pos
+            if math.hypot(d[0], d[1]) < 0.5:
+                self.drone_i += 1
+            ey = wrap180(math.degrees(math.atan2(d[1], d[0])) - it["yaw"])
+            act.look_yaw = float(np.clip(ey * 0.3, -8.0, 8.0))
+            act.move_forward = 1.0 if abs(ey) < 35.0 else 0.2
+        t0, p0 = self.drone_last
+        if w.time - t0 > 0.6:
+            act.jump = float(np.linalg.norm(pos[:2] - p0[:2])) < 0.1 and act.move_forward > 0.5
+            self.drone_last = (w.time, pos.copy())
+        eye = pos + np.array([0.0, 0.0, 0.13])
+        fwd = np.array([math.cos(math.radians(it["yaw"])), math.sin(math.radians(it["yaw"]))])
+        for e in w.agents:
+            if e.team == a.team or not e.alive or e.spotted_until > w.time + 0.5:
+                continue
+            v = e.pos[:2] - eye[:2]
+            dist = float(np.hypot(*v))
+            if dist < 30.0 and float(fwd @ v) > 0.85 * dist \
+                    and w.segment_clear(eye, e.pos + np.array([0.0, 0.0, e.height * 0.6]), smoke=True):
+                act.fire = not a.prev_fire
+                break
+        return act
 
     def _continue_busy(self, a: Agent) -> Action:
         kind = a.busy[0]
@@ -375,6 +479,8 @@ class Bot:
             self.maybe_buy(a)
         if a.busy is not None and a.busy[0] in BUSY_TASKS:
             return self._continue_busy(a)
+        if w.mode.name == "r6" and (a.frozen or a.view_mode):
+            return self._drone_act(a)
         if a.frozen:
             if w.time >= self.replan_at:
                 self._plan(self._pick_goal())
@@ -384,6 +490,8 @@ class Bot:
 
         seen = []
         for e in w.agents:
+            if e.team != a.team and e.alive and e.spotted_until > now:
+                self.last_seen[e.id] = (now, e.pos.copy())  # pinged by a team drone / camera
             if e.team == a.team or not e.alive or not vis[a.id, e.id]:
                 continue
             dvec = e.pos - a.pos

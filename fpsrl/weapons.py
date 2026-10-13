@@ -210,7 +210,7 @@ WEAPONS: dict[str, WeaponSpec] = {
                           move_mult=1.0, place="site", place_time=7.0),
     # ---------------------------------------------------------------- R6 generic gadgets
     "breach": WeaponSpec(name="breach", display="Breach Charge", slot=SLOT_SMOKE, kind="gadget", mag=2,
-                         draw_time=0.5, place="wall", place_time=1.0, fuse=2.0, extra={"radius": 0.8}),
+                         draw_time=0.5, place="wall", place_time=1.0, fuse=2.0, extra={"radius": 1.1}),
     "barbed": WeaponSpec(name="barbed", display="Barbed Wire", slot=SLOT_FRAG, kind="gadget", mag=2,
                          draw_time=0.5, place="ground", place_time=1.0),
     "dshield": WeaponSpec(name="dshield", display="Deployable Shield", slot=SLOT_SMOKE, kind="gadget", mag=1,
