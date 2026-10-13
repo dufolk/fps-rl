@@ -7,14 +7,21 @@ import random
 
 from direct.gui.OnscreenImage import OnscreenImage
 from direct.gui.OnscreenText import OnscreenText
-from panda3d.core import CardMaker, Filename, NodePath, Point3, TextNode, TransparencyAttrib
+from panda3d.core import (CardMaker, CullFaceAttrib, Filename, NodePath, Point3, TextNode,
+                          TransparencyAttrib)
 
 from ..geometry import poly_center
-from ..sim import TEAM_NAMES
-from ..weapons import SLOT_FRAG, SLOT_SMOKE, WEAPONS
+from ..sim import LEAN_DIST, LEAN_ROLL, TEAM_NAMES
+from ..weapons import NUM_SLOTS, WEAPONS
 
 TEAM_COLORS = {0: (1.0, 0.55, 0.3, 1), 1: (0.45, 0.75, 1.0, 1)}
 CROSS_COLOR = (0.35, 1.0, 0.45, 0.95)
+
+
+def scope_reticle_roll(lean_off: float) -> float:
+    """Degrees the scope cross turns while the view stays upright. Positive lean rolls it clockwise."""
+    k = 0.0 if not LEAN_DIST else float(lean_off) / LEAN_DIST
+    return -k * LEAN_ROLL
 
 
 def _rect(parent, color, l, r, b, t, name="rect"):
@@ -166,7 +173,13 @@ class HUD:
         img.setTransparency(TransparencyAttrib.M_alpha)
         _rect(self.scope, (0, 0, 0, 1), -4, -0.999, -1.2, 1.2)
         _rect(self.scope, (0, 0, 0, 1), 0.999, 4, -1.2, 1.2)
+        # its own node: `self.reticle` is the drone overlay, and hiding the scope
+        # node leaves quads created afterwards invisible
+        self.scope_cross = base.aspect2d.attachNewNode("scope_cross")
+        self.scope_cross.reparentTo(base.aspect2d, -99)
+        self._reticle_roll = None
         self.scope.hide()
+        self.scope_cross.hide()
         # scoreboard
         self.board = self.root.attachNewNode("board")
         _rect(self.board, (0, 0, 0, 0.65), -0.95, 0.95, -0.62, 0.62)
@@ -186,6 +199,7 @@ class HUD:
             fill.setPos(x - 0.05, 0, -0.25)
             label = text("ABC"[i], (x, -0.218), 0.05, parent=self.obj_root)
             self.obj_cells.append((bg, fill, label))
+        self.obj_root.hide()
         self.phase_text = text("", (0, -0.2), 0.04, (1, 0.9, 0.55, 1), parent=self.score_panel, font=cf)
         self.money_text = text("", (0.06, 0.24), 0.05, (0.45, 1.0, 0.5, 1), TextNode.ALeft, parent=self.hp_panel)
         self.armor_text = text("", (0.33, 0.165), 0.03, (0.6, 0.8, 1.0, 1), TextNode.ALeft, parent=self.hp_panel,
@@ -327,6 +341,39 @@ class HUD:
         self.inspect_t = 0.0
         self.inspect_root.hide()
 
+    def _paint_reticle(self, roll_deg: float):
+        """Scope cross in the XZ plane, rotated so a lean tilts the lines and not the view."""
+        if self._reticle_roll is not None and abs(roll_deg - self._reticle_roll) < 0.05:
+            return
+        self._reticle_roll = roll_deg
+        for child in self.scope_cross.getChildren():
+            child.removeNode()
+        ang = math.radians(roll_deg)
+        c, s = math.cos(ang), math.sin(ang)
+
+        def rot(x, z):
+            return x * c - z * s, x * s + z * c
+
+        def seg(x0, z0, x1, z1, half):
+            dx, dz = x1 - x0, z1 - z0
+            length = math.hypot(dx, dz) or 1.0
+            px, pz = -dz / length * half, dx / length * half
+            corners = ((x0 - px, z0 - pz), (x0 + px, z0 + pz), (x1 + px, z1 + pz), (x1 - px, z1 - pz))
+            cm = CardMaker("reticle")
+            cm.setFrame(*(Point3(x, 0, z) for x, z in corners))
+            n = self.scope_cross.attachNewNode(cm.generate())
+            n.setColor(0, 0, 0, 0.92)
+            n.setTransparency(TransparencyAttrib.M_alpha)
+            n.setAttrib(CullFaceAttrib.make(CullFaceAttrib.M_cull_none))
+            n.show()
+        self.scope_cross.show()
+
+        arms = ((0, -0.90, 0, 0.90, 0.0015), (-0.90, 0, 0.90, 0, 0.0015),
+                (0, 0.46, 0, 0.90, 0.0045), (0, -0.90, 0, -0.46, 0.0045),
+                (0.46, 0, 0.90, 0, 0.0045), (-0.90, 0, -0.46, 0, 0.0045))
+        for x0, z0, x1, z1, half in arms:
+            seg(*rot(x0, z0), *rot(x1, z1), half)
+
     # ------------------------------------------------------------------ update
     def update(self, dt, world, agent, vfov_deg, show_board=False, scope_active=False, spectating=None,
                first_person=True):
@@ -368,8 +415,11 @@ class HUD:
             self.cross.hide()
         if scope_active:
             self.scope.show()
+            self.scope_cross.show()
+            self._paint_reticle(scope_reticle_roll(agent.lean_off))
         else:
             self.scope.hide()
+            self.scope_cross.hide()
         # hitmarker
         if self.hit_t > 0:
             self.hit_t -= dt
@@ -401,13 +451,19 @@ class HUD:
         elif spec.kind in ("grenade", "gadget", "shield"):
             self.ammo_text.setText(str(ws.mag))
             self.ammo_text.setFg((1, 1, 1, 1))
-            self.reserve_text.setText("")
+            if spec.kind == "grenade" and agent.throw_at >= 0 and agent.cook_until > 0:
+                left = max(0.0, agent.cook_until - now)
+                self.reserve_text.setText(f"{left:.1f}s")
+                hot = spec.name == "frag" and left < 0.75
+                self.reserve_text.setFg((1, 0.3, 0.22, 1) if hot else (1, 0.85, 0.35, 1))
+            else:
+                self.reserve_text.setText("")
         else:
             self.ammo_text.setText("--")
             self.ammo_text.setFg((1, 1, 1, 1))
             self.reserve_text.setText("")
         items = []
-        for s in range(4, 8):
+        for s in range(4, NUM_SLOTS + 1):
             w = agent.inv.get(s)
             if w is not None:
                 n = f" x{w.mag}" if w.spec.kind in ("grenade", "gadget", "shield") else ""
@@ -417,7 +473,7 @@ class HUD:
         self.score_l.setText(str(score[0]))
         self.score_r.setText(str(score[1]))
         mode = world.mode
-        if hasattr(mode, "time_left") and mode.name in ("bomb", "r6"):
+        if hasattr(mode, "time_left") and mode.name in ("bomb", "elim", "r6"):
             left = mode.time_left()
             if mode.phase == "planted":
                 self.timer_text.setText("C4")
@@ -478,7 +534,7 @@ class HUD:
         if show_board:
             self.board.show()
             for k in (0, 1):
-                eco = world.mode.name == "bomb"
+                eco = getattr(world.mode, "economy", False)
                 rows = [f"{TEAM_NAMES[k]}   {world.score[k]}", "",
                         "Name        K    D    HS" + ("     $" if eco else "")]
                 mine = world.agents[self.local_id].team
@@ -526,13 +582,13 @@ class HUD:
             self.obj_root.hide()
         # phase / economy
         phase = ""
-        if mode.name in ("bomb", "r6"):
+        if mode.name in ("bomb", "elim", "r6"):
             names = {"freeze": ("冻结时间", "FREEZE TIME"), "prep": ("准备阶段", "PREPARATION"),
                      "live": ("", ""), "planted": ("炸弹已安放" if mode.name == "bomb" else "拆弹器已安放",
                                                   "BOMB PLANTED" if mode.name == "bomb" else "DEFUSER PLANTED"),
                      "over": ("回合结束", "ROUND OVER")}
             phase = names.get(mode.phase, ("", ""))[0 if zh else 1]
-            if mode.name == "bomb" and mode.can_buy_now(agent):
+            if getattr(mode, "economy", False) and mode.can_buy_now(agent):
                 left = mode.state().get("buy_left", 0.0)
                 phase = (phase + "   " if phase else "") + (f"购买 {left:.0f}s [B]" if zh else f"BUY {left:.0f}s [B]")
             if mode.name == "r6":
@@ -545,7 +601,7 @@ class HUD:
                                   f"DRONES {world.gadgets.drones_left.get(agent.id, 0)}"))
                 phase = (phase + "   " if phase else "") + "  ".join(extra)
         self.phase_text.setText(phase)
-        self.money_text.setText(f"${agent.money}" if mode.name == "bomb" else "")
+        self.money_text.setText(f"${agent.money}" if getattr(mode, "economy", False) else "")
         op = ""
         if mode.name == "r6" and agent.operator:
             from ..operators import OPERATORS
@@ -566,7 +622,7 @@ class HUD:
             self.busy_root.hide()
         # contextual prompt
         prompt = ""
-        if agent.alive and agent.busy is None and mode.name in ("bomb", "r6"):
+        if agent.alive and agent.busy is None and mode.name in ("bomb", "elim", "r6"):
             b = mode.bomb
             side = mode.side(agent.team)
             if b and b["state"] == "planted" and side == 1 and \
@@ -623,7 +679,7 @@ class HUD:
         now = world.time
         zh = self.cjk
         items = []
-        if not world.done and mode.name in ("bomb", "r6") and mode.phase != "over":
+        if not world.done and mode.name in ("bomb", "elim", "r6") and mode.phase != "over":
             b = mode.bomb
             if b and b["state"] == "planted":
                 label = ("拆弹器" if zh else "DEFUSER") if mode.name == "r6" else "C4"
@@ -683,7 +739,9 @@ class HUD:
             else:
                 n.hide()
         if not visible:
+            self.obj_root.hide()
             self.scope.hide()
+            self.scope_cross.hide()
             self.hurt.setColorScale(0.8, 0, 0, 0)
             self.vignette.hide()
         else:
@@ -700,6 +758,7 @@ class HUD:
         self.inspect_root.removeNode()
         self.root.removeNode()
         self.scope.removeNode()
+        self.scope_cross.removeNode()
         self.hp_panel.removeNode()
         self.ammo_panel.removeNode()
         self.score_panel.removeNode()
