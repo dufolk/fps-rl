@@ -20,12 +20,28 @@ POSES = {
         ("basement", (-3.0, -9.5, -3.99, 180.0, 0.0)),
         ("roof", (-10.0, -12.0, 8.01, 30.0, -5.0)),
     ],
-    "desert2": [
-        ("mid", (-4.0, -8.0, 0.01, 90.0, 0.0)),
-        ("long", (34.0, -10.0, 0.81, 90.0, 0.0)),
-        ("a_site", (26.0, 22.0, 1.61, 30.0, 0.0)),
+    "desert2": [  # z None: stand on the floor below
+        ("t_spawn", (2.0, -47.0, None, 90.0, 0.0)),
+        ("mid", (0.0, -25.0, None, 90.0, 0.0)),
+        ("mid_doors", (-2.0, 6.0, None, 90.0, 0.0)),
+        ("ct_mid", (-6.0, 24.0, None, 180.0, 0.0)),
+        ("long", (42.0, -12.0, None, 90.0, 0.0)),
+        ("pit", (44.0, -22.0, None, 90.0, 5.0)),
+        ("a_site", (30.0, 30.0, None, 40.0, 0.0)),
+        ("a_short", (18.0, 12.0, None, 90.0, 5.0)),
+        ("b_site", (-38.0, 22.0, None, 90.0, 0.0)),
+        ("upper_tunnels", (-40.0, -20.0, None, 90.0, 0.0)),
+        ("lower_tunnels", (-16.0, 7.0, None, 0.0, 0.0)),
+        ("ct_spawn", (15.0, 30.0, None, 0.0, 0.0)),
     ],
 }
+
+
+def floor_z(w, x, y):
+    inside = (w.smin[:, 0] <= x) & (x <= w.smax[:, 0]) & (w.smin[:, 1] <= y) & (y <= w.smax[:, 1])
+    tops = w.smax[inside, 2]
+    tops = tops[tops < tops.max() - 0.01] if len(tops) else tops
+    return float(tops.max()) + 0.01 if len(tops) else 0.01
 
 
 def main():
@@ -55,7 +71,7 @@ def main():
 
     run(0.3)
     for name, (x, y, z, yaw, pitch) in POSES.get(map_name, []):
-        me.pos[:] = (x, y, z)
+        me.pos[:] = (x, y, floor_z(w, x, y) if z is None else z)
         me.prev_pos[:] = me.pos
         me.yaw, me.pitch = yaw, pitch
         me.vel[:] = 0

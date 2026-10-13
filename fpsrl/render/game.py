@@ -24,6 +24,7 @@ from ..net.protocol import (B_ALT, B_FIRE, B_RELOAD, apply_agent, apply_client_c
                             input_to_action, world_state)
 from ..sim import TEAM_NAMES, Action, MatchConfig, World
 from ..weapons import NUM_SLOTS, PRIMARY_CHOICES, random_primary
+from .ime import hold as hold_ime
 from .viewer import BASE_HFOV, Viewer
 
 HELP_ZH = """[F1] 隐藏帮助
@@ -807,10 +808,15 @@ class GameApp:
         self.screenshot = screenshot
         self.shot_time = shot_time
         self.base.taskMgr.add(self.update, "game-update", sort=-10)
-        self.base.exitFunc = self.session.stop
+        self.base.exitFunc = self._on_exit
+
+    def _on_exit(self):
+        hold_ime(self.base.win, True)
+        self.session.stop()
 
     def update(self, task):
         dt = min(globalClock.getDt(), 0.1)  # noqa: F821  (Panda3D builtin)
+        hold_ime(self.base.win, False)
         self.session.update(dt)
         if self.screenshot and self.world.time >= self.shot_time:
             self.base.graphicsEngine.renderFrame()

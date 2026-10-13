@@ -53,39 +53,40 @@ class NavGrid:
         self._bmin = np.concatenate([np.array([b.mn for b in static], dtype=np.float64).reshape(-1, 3), d.mins])
         self._bmax = np.concatenate([np.array([b.mx for b in static], dtype=np.float64).reshape(-1, 3), d.maxs])
         bmin, bmax = self._bmin, self._bmax
-        X, Y = np.meshgrid(self.xs, self.ys)
-        P = np.stack([X.ravel(), Y.ravel()], axis=1)
         r = clearance
         nodes, ncell, support, blk_node, blk_panel = [], [], [], [], []
         self._near: dict[int, np.ndarray] = {}
-        chunk = max(1, 4_000_000 // max(1, len(bmin)))
-        for s in range(0, len(P), chunk):
-            Q = P[s:s + chunk]
-            inside = ((Q[:, None, 0] >= bmin[None, :, 0]) & (Q[:, None, 0] <= bmax[None, :, 0])
-                      & (Q[:, None, 1] >= bmin[None, :, 1]) & (Q[:, None, 1] <= bmax[None, :, 1]))
-            near = ((Q[:, None, 0] > bmin[None, :, 0] - r) & (Q[:, None, 0] < bmax[None, :, 0] + r)
-                    & (Q[:, None, 1] > bmin[None, :, 1] - r) & (Q[:, None, 1] < bmax[None, :, 1] + r))
+        for row, y in enumerate(self.ys):
+            s = row * self.W
+            Q = np.stack([self.xs, np.full(self.W, y)], axis=1)
+            sel = np.nonzero((y > bmin[:, 1] - r) & (y < bmax[:, 1] + r))[0]
+            smin, smax = bmin[sel], bmax[sel]
+            inside = ((Q[:, None, 0] >= smin[None, :, 0]) & (Q[:, None, 0] <= smax[None, :, 0])
+                      & (y >= smin[None, :, 1]) & (y <= smax[None, :, 1]))
+            near = (Q[:, None, 0] > smin[None, :, 0] - r) & (Q[:, None, 0] < smax[None, :, 0] + r)
             for k in range(len(Q)):
-                ins = np.nonzero(inside[k])[0]
+                ins = sel[np.nonzero(inside[k])[0]]
                 if not len(ins):
                     continue
                 tops = np.unique(bmax[ins, 2])
                 tops = tops[tops <= max_floor]
                 if not len(tops):
                     continue
-                nb = np.nonzero(near[k])[0]
+                nb = sel[np.nonzero(near[k])[0]]
                 self._near[s + k] = nb
                 lo, hi = bmin[nb, 2], bmax[nb, 2]
                 is_panel = nb >= ns
                 ilo, ihi = bmin[ins, 2], bmax[ins, 2]
+                tops = tops[::-1]
+                T = tops[:, None]
+                ok = ~(((lo[nb < ns] < T + HEAD_HI) & (hi[nb < ns] > T + HEAD_LO)).any(axis=1)
+                       | ((ilo[ins < ns] < T - 1e-6) & (ihi[ins < ns] > T + 1e-6)).any(axis=1))
                 found = []
-                for t in tops[::-1]:
+                for t in tops[ok]:
                     if found and found[-1] - t <= C.STEP_HEIGHT:
                         continue
                     hit = (lo < t + HEAD_HI) & (hi > t + HEAD_LO)
                     buried = ins[(ilo < t - 1e-6) & (ihi > t + 1e-6)]
-                    if (hit & ~is_panel).any() or (buried < ns).any():
-                        continue
                     under = ins[np.abs(ihi - t) < 1e-6]
                     i = len(nodes)
                     nodes.append((Q[k, 0], Q[k, 1], t))

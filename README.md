@@ -7,7 +7,7 @@
 | 地图 | 模式 | 说明 |
 |---|---|---|
 | 运输船 `transport_ship` | 团队竞技 / 占点 | 参考 CF「运输船」：两端出生平台、集装箱通道、上层高点 |
-| 沙漠灰 `desert2` | 爆破 / 团队竞技 | CF 沙漠灰（Dust2 布局）：A 大 / A 小、中路、B 洞、CT 出生 |
+| 沙漠灰 `desert2` | 爆破 / 团队竞技 | CS 1.6 de_dust2 原版几何与贴图（`tools/import_dust2.py`）：A 大 / A 小、中门、狗洞、B 洞、CT 出生 |
 | 占点小镇 `hp_town` | 占点 / 团队竞技 | 由厘米坐标数据复刻（`tools/import_town.py`），A/B/C 三个点 |
 | 银行 `bank` | 彩六 / 团队竞技 | 彩六银行：地下室 + 1F + 2F + 屋顶，可破坏墙 / 地板、加固、路障，4 组点位 |
 
@@ -249,6 +249,10 @@ fpsrl/
   profile.py                   玩家设置 / 皮肤存档
 play.py                        游戏入口
 tools/import_town.py           把厘米坐标的小镇点位数据转换成 fpsrl/maps/data/hp_town.json
+tools/import_dust2.py          把 de_dust2 OBJ 转成渲染网格 + 碰撞盒（fpsrl/maps/data/dust2/）
+tools/top_view.py              地图俯视图（地面高度、炸弹点、出生点、购买区）
 ```
+
+沙漠灰模型：[CS 1.6 de_dust2](https://sketchfab.com/3d-models/de-dust2-cs-map-056008d59eb849a29c0ab6884c0c3d87) by vrchris，CC-BY 4.0。重新导入：`py tools/import_dust2.py de_dust2-cs-map.zip`。
 
 新增地图：在 `fpsrl/maps/` 下返回一个 `MapData`（盒子、出生点、购买区、`objectives` 里的点位 / 炸弹点），并在 `maps/__init__.py` 的 `MAPS` 中注册支持的模式。新增模式：继承 `fpsrl/modes/base.py` 的 `GameMode`。新增武器：在 `weapons.py` 添加 `WeaponSpec`，在 `render/models.py` 添加模型构建函数。

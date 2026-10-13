@@ -76,6 +76,9 @@ class WorldScene:
             self.water = None
             self._build_ground()
         self._build_map()
+        if game_map.mesh:
+            from .map_mesh import build as build_mesh
+            build_mesh(self.root, game_map.mesh, self.ts_normal)
         self._build_props()
         if ship:
             self._build_container_details()

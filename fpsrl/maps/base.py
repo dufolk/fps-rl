@@ -45,3 +45,4 @@ class MapData:
     cameras: list = field(default_factory=list)  # [(x, y, z, yaw, pitch)] security cameras (R6)
     nav_max_floor: float = 1.3  # floors above this are not walkable for the nav grid (ship bridge roof)
     nav_levels: tuple = ()  # extra z heights for multi-storey maps (handled by the nav grid)
+    mesh: str = ""  # imported render mesh under maps/data/<mesh>/ (collision boxes are then invisible)

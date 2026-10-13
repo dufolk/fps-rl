@@ -5,6 +5,7 @@ from ..bots import Bot
 from ..profile import Profile
 from ..sim import MatchConfig, World
 from .game import ClientSession, LocalSession
+from .ime import hold as hold_ime
 from .menu import MainMenu, PauseMenu, set_fullscreen
 from .viewer import Viewer
 
@@ -116,6 +117,7 @@ class App:
         self.base.userExit()
 
     def _on_exit(self):
+        hold_ime(self.base.win, True)
         if self.session is not None:
             self.session.stop()
             self.session = None
@@ -124,6 +126,7 @@ class App:
     # ------------------------------------------------------------------ loop
     def _update(self, task):
         dt = min(globalClock.getDt(), 0.1)  # noqa: F821  (Panda3D builtin)
+        hold_ime(self.base.win, self.session is None)
         if self.session is not None:
             self.session.update(dt)
         else:
