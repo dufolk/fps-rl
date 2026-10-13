@@ -450,6 +450,14 @@ class Viewer:
                 self._sound("round_win" if e["team"] == w.agents[me].team else "round_lose", None, 0.7)
             elif t == "drone_deploy":
                 self._sound("drone", Point3(*w.agents[e["agent"]].eye()), 0.6)
+            elif t == "view":
+                if e["agent"] == me:
+                    self._sound("view_static", None, 0.5)
+            elif t == "spot":
+                if w.agents[e["agent"]].team == w.agents[me].team and e["targets"]:
+                    self._sound("spot", None, 0.6)
+            elif t == "round_start":
+                self._sound("round_start", None, 0.6)
             elif t in ("gadget_placed", "launch"):
                 a = w.agents[e["agent"]]
                 self._sound("pin" if t == "gadget_placed" else "knife_swing", Point3(*a.eye()), 0.6)

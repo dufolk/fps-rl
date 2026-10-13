@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import math
 import os
+import random
 
 from direct.gui.OnscreenImage import OnscreenImage
 from direct.gui.OnscreenText import OnscreenText
-from panda3d.core import CardMaker, Filename, NodePath, TextNode, TransparencyAttrib
+from panda3d.core import CardMaker, Filename, NodePath, Point3, TextNode, TransparencyAttrib
 
+from ..geometry import poly_center
 from ..sim import TEAM_NAMES
 from ..weapons import SLOT_FRAG, SLOT_SMOKE, WEAPONS
 
@@ -186,7 +188,8 @@ class HUD:
             self.obj_cells.append((bg, fill, label))
         self.phase_text = text("", (0, -0.2), 0.04, (1, 0.9, 0.55, 1), parent=self.score_panel, font=cf)
         self.money_text = text("", (0.06, 0.24), 0.05, (0.45, 1.0, 0.5, 1), TextNode.ALeft, parent=self.hp_panel)
-        self.armor_text = text("", (0.33, 0.165), 0.03, (0.6, 0.8, 1.0, 1), TextNode.ALeft, parent=self.hp_panel)
+        self.armor_text = text("", (0.33, 0.165), 0.03, (0.6, 0.8, 1.0, 1), TextNode.ALeft, parent=self.hp_panel,
+                               font=cf)
         # hold-action progress
         self.busy_root = self.root.attachNewNode("busy")
         _rect(self.busy_root, (0, 0, 0, 0.55), -0.3, 0.3, -0.33, -0.27)
@@ -200,6 +203,23 @@ class HUD:
         self.round_text = text("", (0, 0.42), 0.085, font=cf)
         self.round_sub = text("", (0, 0.34), 0.045, (0.9, 0.9, 0.9, 1), font=cf)
         self.round_t = 0.0
+        # objective / spotted-enemy markers
+        self.marks = [text("", (0, 0), 0.036, font=cf) for _ in range(12)]
+        # drone / camera feed
+        self.feed_fx = base.render2d.attachNewNode("feed_fx")
+        self.feed_tint = _rect(self.feed_fx, (1, 1, 1, 1), -1, 1, -1, 1, "tint")
+        self.scan = self.feed_fx.attachNewNode("scan")
+        for i in range(42):
+            y = -1.05 + i * 0.05
+            _rect(self.scan, (0, 0, 0, 0.16), -1, 1, y, y + 0.014, "line")
+        self.noise = [_rect(self.feed_fx, (1, 1, 1, 1), -1, 1, -0.006, 0.006, "noise") for _ in range(6)]
+        self.feed_fx.hide()
+        self.reticle = self.root.attachNewNode("reticle")
+        for x, z, sx, sz in ((0, 0.06, 0.003, 0.03), (0, -0.06, 0.003, 0.03), (0.06, 0, 0.03, 0.003),
+                             (-0.06, 0, 0.03, 0.003)):
+            _rect(self.reticle, (1, 1, 1, 0.8), x - sx / 2, x + sx / 2, z - sz / 2, z + sz / 2)
+        self.reticle.hide()
+        self.rec_text = text("", (0, -0.3), 0.045, (1, 0.3, 0.25, 1), parent=top, font=cf)
         # flashbang
         self.flash_card = _rect(base.render2d, (1, 1, 1, 1), -1, 1, -1, 1, "flash_card")
         self.flash_card.setColorScale(1, 1, 1, 0)
@@ -565,6 +585,8 @@ class HUD:
                                    "CAMERA · LMB spot · RMB next · G exit")
         else:
             self.view_text.setText("")
+        self._update_feed(now, agent)
+        self._update_markers(world, agent)
         # flashbang
         if now < agent.flash_until:
             total = max(agent.flash_until - agent.flash_t0, 1e-3)
@@ -574,6 +596,79 @@ class HUD:
         else:
             self.flash_card.setColorScale(1, 1, 1, 0)
 
+    def _update_feed(self, now, agent):
+        if not agent.view_mode:
+            self.feed_fx.hide()
+            self.reticle.hide()
+            self.rec_text.setText("")
+            return
+        drone = agent.view_mode == 1
+        self.feed_fx.show()
+        self.reticle.show()
+        flicker = random.uniform(0.0, 0.03)
+        if drone:
+            self.feed_tint.setColor(0.45, 0.85, 0.55, 0.1 + flicker)
+        else:
+            self.feed_tint.setColor(0.55, 0.65, 0.95, 0.16 + flicker)
+        self.scan.setZ((now * 0.04) % 0.05)
+        for band in self.noise:
+            band.setZ(random.uniform(-1, 1))
+            band.setSz(random.uniform(0.3, 2.5))
+            band.setColorScale(1, 1, 1, random.uniform(0.0, 0.1))
+        label = ("无人机" if self.cjk else "DRONE") if drone else (("摄像头" if self.cjk else "CAM") + f" {agent.view_ref}")
+        self.rec_text.setText(("● " if int(now * 2) % 2 else "   ") + "REC  " + label)
+
+    def _update_markers(self, world, agent):
+        mode = world.mode
+        now = world.time
+        zh = self.cjk
+        items = []
+        if not world.done and mode.name in ("bomb", "r6") and mode.phase != "over":
+            b = mode.bomb
+            if b and b["state"] == "planted":
+                label = ("拆弹器" if zh else "DEFUSER") if mode.name == "r6" else "C4"
+                items.append(((b["pos"][0], b["pos"][1], b["pos"][2] + 0.6), label, (1, 0.35, 0.3, 1)))
+            else:
+                for i in mode.active_sites:
+                    s = mode.sites[i]
+                    c = mode.site_centers[i]
+                    items.append(((c[0], c[1], s.get("z", s["zmin"] + 0.5) + 1.6), s["name"], (1, 0.85, 0.4, 0.9)))
+        elif not world.done and mode.name == "dom":
+            for i, p in enumerate(mode.points):
+                c = poly_center(p["poly"])
+                own = mode.owner[i]
+                col = TEAM_COLORS[own] if own >= 0 else (1, 1, 1, 0.9)
+                items.append(((c[0], c[1], p.get("z", p.get("zmin", 0.0) + 0.5) + 2.0), p["name"], col))
+        for e in world.agents:
+            if e.team != agent.team and e.alive and e.spotted_until > now:
+                items.append(((e.pos[0], e.pos[1], e.pos[2] + e.height + 0.35), "!", (1, 0.25, 0.2, 1)))
+        cam = self.base.cam
+        hfov, vfov = self.base.camLens.getFov()
+        tx, ty = math.tan(math.radians(hfov / 2)), math.tan(math.radians(vfov / 2))
+        ar = self.base.getAspectRatio()
+        eye = cam.getPos(self.base.render)
+        placed = []
+        for i, node in enumerate(self.marks):
+            if i >= len(items):
+                node.setText("")
+                continue
+            pos, label, col = items[i]
+            wp = Point3(float(pos[0]), float(pos[1]), float(pos[2]))
+            p = cam.getRelativePoint(self.base.render, wp)
+            if p.y > 0.1:
+                fx, fy = p.x / p.y / tx, p.z / p.y / ty
+            else:
+                n = max(abs(p.x), abs(p.z), 1e-6)
+                fx, fy = p.x / n * 2.0, p.z / n * 2.0
+            k = max(abs(fx) / 0.94, abs(fy) / 0.86, 1.0)
+            x, y = fx / k * ar, fy / k
+            while any(abs(x - px) < 0.16 and abs(y - py) < 0.09 for px, py in placed):
+                y -= 0.09
+            placed.append((x, y))
+            node.setPos(x, y)
+            node.setText(f"{label}\n{(wp - eye).length():.0f}m")
+            node.setFg((col[0], col[1], col[2], col[3] * (0.55 if k > 1.0 else 1.0)))
+
     def set_help(self, text: str):
         self.help_text.setText(text)
 
@@ -582,7 +677,7 @@ class HUD:
 
     def set_visible(self, visible: bool):
         for n in (self.root, self.hp_panel, self.ammo_panel, self.score_panel, self.feed_root, self.banner.root,
-                  self.inspect_root, self.help_text, self.info_text):
+                  self.inspect_root, self.help_text, self.info_text, self.feed_fx, self.rec_text):
             if visible:
                 n.show()
             else:
@@ -598,6 +693,8 @@ class HUD:
 
     def destroy(self):
         self.flash_card.removeNode()
+        self.feed_fx.removeNode()
+        self.rec_text.destroy()
         self.obj_root.removeNode()
         self.banner.destroy()
         self.inspect_root.removeNode()

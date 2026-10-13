@@ -9,7 +9,7 @@ import numpy as np
 from panda3d.core import Filename
 
 SR = 44100
-SYNTH_VERSION = "5"
+SYNTH_VERSION = "6"
 CUSTOM_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "custom_sfx")
 
 
@@ -254,6 +254,9 @@ def build_library() -> dict[str, np.ndarray]:
                                      (0.05, click(1400, 0.2, 44, 0.04, 0.9), 0.5)]),
         "reinforce": compose(0.6, [(0.0, click(900, 0.2, 45, 0.05, 0.3), 1.0), (0.25, thud(80, 0.3, 46), 0.8)]),
         "drone": hiss(0.6, 47) * 0.4,
+        "view_static": compose(0.3, [(0.0, hiss(0.22, 50), 0.5), (0.0, click(5200, 0.04, 51, 0.003), 0.7)]),
+        "spot": tone((1500, 2250), 0.25, 0.06),
+        "round_start": compose(0.5, [(0.0, tone((520,), 0.18, 0.06), 0.8), (0.2, tone((780,), 0.25, 0.08), 0.9)]),
         "buy": compose(0.2, [(0.0, click(2000, 0.08, 48), 0.8), (0.06, click(3000, 0.06, 49), 0.6)]),
     }
     for k in range(1, 7):
