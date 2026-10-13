@@ -14,15 +14,18 @@ import numpy as np
 from gymnasium import spaces
 
 from .bots import Bot
+from .maps import MAPS
 from .obs import ObsBuilder
 from .sim import Action, MatchConfig, World
-from .weapons import PRIMARY_CHOICES
+from .weapons import NUM_SLOTS, PRIMARY_CHOICES
 
 YAW_BINS = np.array([-30.0, -15.0, -6.0, -2.0, 0.0, 2.0, 6.0, 15.0, 30.0])
 PITCH_BINS = np.array([-10.0, -3.0, 0.0, 3.0, 10.0])
-MD_NVEC = [3, 3, len(YAW_BINS), len(PITCH_BINS), 2, 2, 2, 2, 2, 6]
+MD_NVEC = [3, 3, len(YAW_BINS), len(PITCH_BINS), 2, 2, 2, 2, 2, NUM_SLOTS + 1, 3, 2, 2]
 ACTION_FIELDS = ["move_forward", "move_right", "look_yaw", "look_pitch", "fire", "alt",
-                 "jump", "crouch", "reload", "switch"]
+                 "jump", "crouch", "reload", "switch", "lean", "use", "gadget"]
+BOT_PRIMARY_MIX = (("ak47", 0.22), ("m4a4", 0.14), ("m4a1", 0.12), ("famas", 0.08), ("mp5", 0.08),
+                   ("mp9", 0.06), ("uzi", 0.05), ("awm", 0.15), ("scar20", 0.05), ("m249", 0.05))
 
 
 @dataclass
@@ -36,10 +39,23 @@ class RewardConfig:
     win: float = 3.0
     lose: float = -3.0
     step: float = 0.0
+    # objective modes
+    round_win: float = 1.0
+    round_lose: float = -1.0
+    capture: float = 0.5        # own team captures a point (x0.3 when the agent was not on it)
+    point_lost: float = -0.25   # enemy captures a point
+    hold: float = 0.0           # per second for every point the team owns
+    plant: float = 0.8
+    defuse: float = 0.8
+    in_objective: float = 0.0   # per second inside the zone the agent should be in (shaping)
 
 
 @dataclass
 class EnvConfig:
+    map_name: str = "transport_ship"
+    mode: str = "tdm"  # tdm | dom | bomb | r6 (must be listed in the map's modes)
+    mode_params: dict = field(default_factory=dict)
+    learner_auto_buy: bool = True  # bomb mode: controlled agents buy like bots during freeze time
     team_size: int = 4
     learner_team: int = 0
     tick_rate: int = 60
@@ -91,14 +107,15 @@ def decode_action(action, action_type: str, repeat: int, max_turn: float = 30.0)
             move_forward=float(a[0] - 1), move_right=float(a[1] - 1),
             look_yaw=float(YAW_BINS[a[2]]) / repeat, look_pitch=float(PITCH_BINS[a[3]]) / repeat,
             fire=bool(a[4]), alt=bool(a[5]), jump=bool(a[6]), crouch=bool(a[7]),
-            reload=bool(a[8]), switch=int(a[9]),
+            reload=bool(a[8]), switch=int(a[9]), lean=int(a[10]) - 1, use=bool(a[11]), gadget=bool(a[12]),
         )
     a = np.clip(a.astype(np.float64), -1.0, 1.0)
     return Action(
         move_forward=float(a[0]), move_right=float(a[1]),
         look_yaw=float(a[2]) * max_turn / repeat, look_pitch=float(a[3]) * max_turn * 0.5 / repeat,
         fire=a[4] > 0, alt=a[5] > 0, jump=a[6] > 0, crouch=a[7] > 0, reload=a[8] > 0,
-        switch=int(np.clip(np.round((a[9] + 1.0) * 2.5), 0, 5)),
+        switch=int(np.clip(np.round((a[9] + 1.0) * NUM_SLOTS / 2.0), 0, NUM_SLOTS)),
+        lean=int(np.clip(np.round(a[10]), -1, 1)), use=a[11] > 0, gadget=a[12] > 0,
     )
 
 
@@ -108,23 +125,30 @@ class _FPSBase:
     def _setup(self, config, render_mode, controlled):
         self.cfg = EnvConfig.make(config)
         cfg = self.cfg
+        if cfg.map_name not in MAPS:
+            raise ValueError(f"unknown map {cfg.map_name!r}, choose from {sorted(MAPS)}")
         n = cfg.team_size
         rng = np.random.default_rng(cfg.seed)
+        names, probs = zip(*BOT_PRIMARY_MIX)
         primaries = []
         for aid in range(2 * n):
             if cfg.bot_primaries == "mixed":
-                primaries.append("awm" if rng.random() < 0.25 else "ak47")
+                primaries.append(str(rng.choice(names, p=np.array(probs) / sum(probs))))
             else:
                 primaries.append(cfg.bot_primaries)
         for aid in controlled:
             primaries[aid] = cfg.learner_primary
         assert all(p in PRIMARY_CHOICES for p in primaries)
         self.world = World(MatchConfig(
-            team_size=n, tick_rate=cfg.tick_rate, kill_limit=cfg.kill_limit,
+            team_size=n, map_name=cfg.map_name, mode=cfg.mode, mode_params=dict(cfg.mode_params),
+            tick_rate=cfg.tick_rate, kill_limit=cfg.kill_limit,
             time_limit=cfg.time_limit, friendly_fire=cfg.friendly_fire, respawn=cfg.respawn,
             primaries=primaries, seed=cfg.seed,
         ))
         self.controlled = list(controlled)
+        # bots that only shop for the learners (bomb mode economy)
+        self._buyers = [Bot(self.world, aid, cfg.bot_difficulty, seed=aid) for aid in self.controlled] \
+            if cfg.learner_auto_buy and cfg.mode == "bomb" else []
         self.bots = [Bot(self.world, a.id, cfg.bot_difficulty, seed=(cfg.seed or 0) * 101 + a.id)
                      for a in self.world.agents if a.id not in self.controlled]
         if not cfg.teammate_bots:
@@ -136,6 +160,7 @@ class _FPSBase:
         self._viewer = None
         self._rgb_viewer = None
         self._steps = 0
+        self._last_dt = 0.0  # simulated seconds covered by the last env step
         self._last_frame = time.perf_counter()
 
         vec = spaces.Box(-5.0, 5.0, (self.obs_builder.size,), np.float32)
@@ -148,7 +173,7 @@ class _FPSBase:
         if cfg.action_type == "multidiscrete":
             self._act_space = spaces.MultiDiscrete(MD_NVEC)
         elif cfg.action_type == "box":
-            self._act_space = spaces.Box(-1.0, 1.0, (10,), np.float32)
+            self._act_space = spaces.Box(-1.0, 1.0, (len(MD_NVEC),), np.float32)
         else:
             raise ValueError(cfg.action_type)
 
@@ -202,12 +227,47 @@ class _FPSBase:
                     total += r.win
                 elif e["winner"] >= 0:
                     total += r.lose
+            elif t == "round_end":
+                total += r.round_win if e["team"] == me.team else r.round_lose
+                stats["rounds_won"] = stats.get("rounds_won", 0) + int(e["team"] == me.team)
+            elif t == "point_captured":
+                if e["team"] == me.team:
+                    on = me.alive and self.world.mode.in_zone(me.pos, self.world.mode.points[e["point"]])
+                    total += r.capture * (1.0 if on else 0.3)
+                    stats["captures"] = stats.get("captures", 0) + int(on)
+                else:
+                    total += r.point_lost
+            elif t == "bomb_planted" and e["agent"] == aid:
+                total += r.plant
+                stats["plants"] = stats.get("plants", 0) + 1
+            elif t == "bomb_defused" and e["agent"] == aid:
+                total += r.defuse
+                stats["defuses"] = stats.get("defuses", 0) + 1
+        dt = self._last_dt
+        if r.hold and self.world.mode.name == "dom":
+            total += r.hold * dt * sum(1 for o in self.world.mode.owner if o == me.team)
+        if r.in_objective and me.alive and self._in_objective(me):
+            total += r.in_objective * dt
         return float(total), stats
+
+    def _in_objective(self, a) -> bool:
+        m = self.world.mode
+        if m.name == "dom":
+            return any(m.in_zone(a.pos, z) for z in m.points)
+        if hasattr(m, "site_at"):
+            b = m.bomb
+            if m.side(a.team) == 1 and b is not None and b["state"] == "planted":
+                return float(np.linalg.norm(a.pos - np.asarray(b["pos"]))) < 2.0
+            return m.site_at(a.pos) >= 0
+        return False
 
     def _bot_actions(self) -> dict:
         return {b.aid: b.act() for b in self.bots}
 
     def _tick(self, actions: dict) -> list:
+        for b in self._buyers:
+            if b.agent.alive:
+                b.maybe_buy(b.agent)
         acts = self._bot_actions()
         acts.update(actions)
         events = self.world.step(acts)
@@ -235,6 +295,7 @@ class _FPSBase:
         for b in self.bots:
             b.reset(seed * 101 + b.aid)
         self._steps = 0
+        self._last_dt = 0.0
 
     def render(self):
         if self.render_mode == "rgb_array":
@@ -254,7 +315,8 @@ class FPSEnv(_FPSBase, gym.Env):
     """Single-agent environment: the learner plays with/against scripted bots.
 
     Action (multidiscrete): [forward(3), strafe(3), yaw(9 bins), pitch(5 bins),
-    fire, alt(aim/heavy/underhand), jump, crouch, reload, switch(0=keep,1..5)].
+    fire, alt(aim/heavy/underhand), jump, crouch, reload, switch(0=keep,1..7),
+    lean(left/none/right), use(plant/defuse/reinforce, hold), gadget(drone/camera view toggle)].
     """
 
     def __init__(self, config: EnvConfig | dict | None = None, render_mode: str | None = None, **kwargs):
@@ -273,20 +335,22 @@ class FPSEnv(_FPSBase, gym.Env):
     def _info(self, stats) -> dict:
         w = self.world
         me = w.agents[self.learner]
-        return {"stats": stats, "team_kills": list(w.team_kills), "alive": me.alive, "hp": me.hp,
-                "kills": me.kills, "deaths": me.deaths, "time": w.time, "events": []}
+        return {"stats": stats, "team_kills": list(w.team_kills), "score": list(w.score), "alive": me.alive,
+                "hp": me.hp, "kills": me.kills, "deaths": me.deaths, "time": w.time, "events": []}
 
     def step(self, action):
         cfg = self.cfg
         act = decode_action(action, cfg.action_type, cfg.action_repeat, cfg.max_turn_per_step)
         events = []
         me = self.world.agents[self.learner]
+        t0 = self.world.time
         for k in range(cfg.action_repeat):
             events += self._tick({self.learner: act})
             if k == 0:
                 act.switch = 0
             if self.world.done or (cfg.end_on_death and not me.alive):
                 break
+        self._last_dt = self.world.time - t0
         self._steps += 1
         reward, stats = self._reward(self.learner, events)
         terminated = self.world.done or (cfg.end_on_death and not me.alive)
@@ -333,6 +397,7 @@ class FPSMultiAgentEnv(_FPSBase):
                                                       cfg.max_turn_per_step)
                    for n, a in actions.items()}
         events = []
+        t0 = self.world.time
         for k in range(cfg.action_repeat):
             events += self._tick(decoded)
             if k == 0:
@@ -340,6 +405,7 @@ class FPSMultiAgentEnv(_FPSBase):
                     a.switch = 0
             if self.world.done:
                 break
+        self._last_dt = self.world.time - t0
         self._steps += 1
         obs, rew, term, trunc, info = {}, {}, {}, {}, {}
         for n, i in self._name_to_id.items():

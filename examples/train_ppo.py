@@ -1,6 +1,7 @@
 """PPO baseline with stable-baselines3 (pip install stable-baselines3).
 
     py examples/train_ppo.py --timesteps 2000000 --envs 8
+    py examples/train_ppo.py --map hp_town --mode dom --team-size 3
     py examples/train_ppo.py --eval runs/ppo/final.zip     # watch a trained policy
 
 A 1v1 vs "easy" bots curriculum is a reasonable starting point; raise
@@ -18,7 +19,8 @@ import fpsrl  # noqa: E402
 def make_env(rank, args, render_mode=None):
     def _init():
         from stable_baselines3.common.monitor import Monitor
-        env = fpsrl.FPSEnv(team_size=args.team_size, bot_difficulty=args.difficulty,
+        env = fpsrl.FPSEnv(map_name=args.map, mode=args.mode, team_size=args.team_size,
+                           bot_difficulty=args.difficulty,
                            max_episode_steps=args.episode_steps, kill_limit=args.kill_limit,
                            render_mode=render_mode, seed=args.seed + rank)
         return Monitor(env)
@@ -27,6 +29,8 @@ def make_env(rank, args, render_mode=None):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--map", default="transport_ship")
+    p.add_argument("--mode", default="tdm")
     p.add_argument("--timesteps", type=int, default=2_000_000)
     p.add_argument("--envs", type=int, default=8)
     p.add_argument("--team-size", type=int, default=1)
@@ -50,7 +54,7 @@ def main():
             action, _ = model.predict(obs, deterministic=False)
             obs, r, term, trunc, info = env.step(action)
             if term or trunc:
-                print("score", info["team_kills"])
+                print("score", info["score"])
                 obs, _ = env.reset()
 
     try:

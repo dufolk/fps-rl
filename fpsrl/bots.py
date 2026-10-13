@@ -550,7 +550,7 @@ class Bot:
         return Action(use=True, fire=kind in ("plant", "place"), crouch=kind == "defuse")
 
     # ------------------------------------------------------------------ economy
-    def _maybe_buy(self, a: Agent):
+    def maybe_buy(self, a: Agent):
         w = self.world
         m = w.mode
         if self.bought == m.round_uid or not m.can_buy_now(a):
@@ -595,7 +595,7 @@ class Bot:
             self.was_alive = True
             self._plan(self._pick_goal())
         if w.mode.name == "bomb":
-            self._maybe_buy(a)
+            self.maybe_buy(a)
         if a.busy is not None and a.busy[0] in BUSY_TASKS:
             return self._continue_busy(a)
         if a.frozen:

@@ -13,13 +13,16 @@ SELF_FEATURES = [
     "alive", "hp", "pos_x", "pos_y", "pos_z", "vel_fwd", "vel_right", "vel_up",
     "yaw_sin", "yaw_cos", "pitch", "on_ground", "crouch",
     *[f"slot_{i}" for i in range(1, NUM_SLOTS + 1)],
+    *[f"has_{i}" for i in range(1, NUM_SLOTS + 1)],
     "mag", "reserve", "reloading", "ads", "ready", "frags", "smokes",
     "punch_pitch", "punch_yaw", "spread", "protected",
     "dmg_dir_fwd", "dmg_dir_right", "dmg_recency", "time_left", "score_diff",
+    "lean", "busy", "frozen", "armor", "money", "view_mode",
 ]
 ENEMY_FEATURES = ["present", "visible", "dx", "dy", "dz", "dist", "yaw_err", "pitch_err", "hp"]
 ALLY_FEATURES = ["present", "dx", "dy", "dz", "hp"]
 PROJ_FEATURES = ["present", "dx", "dy", "dz", "is_frag", "fuse_left"]
+OBJECTIVE_SIZE = 12  # GameMode.obs(): mode specific (points / bomb / sites), zeros in TDM
 
 
 class ObsBuilder:
@@ -41,7 +44,10 @@ class ObsBuilder:
         self.max_proj = max_projectiles
         self.enemy_mode = enemy_mode
         self.size = (len(SELF_FEATURES) + n_lidar + max_enemies * len(ENEMY_FEATURES)
-                     + max_allies * len(ALLY_FEATURES) + max_projectiles * len(PROJ_FEATURES))
+                     + max_allies * len(ALLY_FEATURES) + max_projectiles * len(PROJ_FEATURES) + OBJECTIVE_SIZE)
+        (x0, y0), (x1, y1) = world.map.bounds
+        self.center = np.array([(x0 + x1) * 0.5, (y0 + y1) * 0.5])
+        self.half = np.array([max((x1 - x0) * 0.5, 1.0), max((y1 - y0) * 0.5, 1.0)])
 
     def layout(self) -> dict:
         """Index ranges of each observation block (useful for custom networks)."""
@@ -49,10 +55,30 @@ class ObsBuilder:
         for name, n in (("self", len(SELF_FEATURES)), ("lidar", self.n_lidar),
                         ("enemies", self.max_enemies * len(ENEMY_FEATURES)),
                         ("allies", self.max_allies * len(ALLY_FEATURES)),
-                        ("projectiles", self.max_proj * len(PROJ_FEATURES))):
+                        ("projectiles", self.max_proj * len(PROJ_FEATURES)),
+                        ("objective", OBJECTIVE_SIZE)):
             out[name] = (k, k + n)
             k += n
         return out
+
+    def _score_diff(self, a: Agent) -> float:
+        w = self.world
+        m = w.mode
+        score = w.score
+        if m.name == "dom":
+            lim = m.p["score_limit"]
+        elif hasattr(m, "win_target"):
+            lim = m.win_target
+        else:
+            lim = w.cfg.kill_limit or 100
+        return (score[a.team] - score[1 - a.team]) / max(lim, 1)
+
+    def _time_left(self) -> float:
+        w = self.world
+        m = w.mode
+        if hasattr(m, "time_left"):
+            return min(m.time_left() / 120.0, 1.0)
+        return max(0.0, 1.0 - w.time / w.cfg.time_limit) if w.cfg.time_limit else 1.0
 
     def _local(self, a: Agent, vec):
         yr = math.radians(a.yaw)
@@ -70,21 +96,23 @@ class ObsBuilder:
         dmg_age = w.time - a.last_damage_time
         df, dr = self._local(a, a.last_damage_dir)
         dn = math.hypot(df, dr) or 1.0
-        lim = w.cfg.kill_limit or 100
-        my, their = w.team_kills[a.team], w.team_kills[1 - a.team]
+        frag, smoke = a.inv.get(SLOT_FRAG), a.inv.get(SLOT_SMOKE)
+        px, py = (a.pos[:2] - self.center) / self.half
         feats = [
-            float(a.alive), a.hp / C.MAX_HP, a.pos[0] / 40.0, a.pos[1] / 13.0, a.pos[2] / 5.0,
+            float(a.alive), a.hp / C.MAX_HP, px, py, a.pos[2] / 5.0,
             vf / 6.0, vr / 6.0, a.vel[2] / 6.0,
             math.sin(math.radians(a.yaw)), math.cos(math.radians(a.yaw)), a.pitch / 90.0,
             float(a.on_ground), (C.STAND_HEIGHT - a.height) / (C.STAND_HEIGHT - C.CROUCH_HEIGHT),
             *[float(a.slot == i) for i in range(1, NUM_SLOTS + 1)],
+            *[float(i in a.inv) for i in range(1, NUM_SLOTS + 1)],
             ws.mag / max(spec.mag, 1), ws.reserve / max(spec.reserve, 1), float(a.reloading), float(a.ads),
-            float(w.time >= a.ready_at), float(a.inv[SLOT_FRAG].mag), float(a.inv[SLOT_SMOKE].mag),
+            float(w.time >= a.ready_at),
+            float(frag.mag) if frag is not None and frag.spec.kind == "grenade" else 0.0,
+            float(smoke.mag) if smoke is not None and smoke.spec.kind == "grenade" else 0.0,
             a.punch[0] / 10.0, a.punch[1] / 10.0, w.current_spread(a) / 10.0, float(w.time < a.protect_until),
             df / dn if dmg_age < 2.0 else 0.0, dr / dn if dmg_age < 2.0 else 0.0,
-            max(0.0, 1.0 - dmg_age / 2.0),
-            max(0.0, 1.0 - w.time / w.cfg.time_limit) if w.cfg.time_limit else 1.0,
-            (my - their) / lim,
+            max(0.0, 1.0 - dmg_age / 2.0), self._time_left(), self._score_diff(a),
+            a.lean, float(a.busy is not None), float(a.frozen), a.armor, a.money / 16000.0, float(a.view_mode),
         ]
         out[k:k + len(feats)] = feats
         k += len(SELF_FEATURES)
@@ -135,4 +163,6 @@ class ObsBuilder:
             out[k:k + len(PROJ_FEATURES)] = [1.0, lx / 20.0, ly / 20.0, rel[2] / 5.0,
                                              float(p.kind == "frag"), max(0.0, p.explode_at - w.time) / 3.0]
             k += len(PROJ_FEATURES)
+        k = self.size - OBJECTIVE_SIZE
+        out[k:] = w.mode.obs(a)
         return np.clip(out, -5.0, 5.0)
