@@ -19,11 +19,11 @@ class Operator:
 
 
 OPERATORS = {
-    "thermite": Operator("thermite", "热切", 0, ("m4a4", "famas"), "deagle", "thermite", ("frag", "breach"),
+    "thermite": Operator("thermite", "热切", 0, ("m4a4", "famas"), "deagle", "thermite", ("flash", "breach"),
                          "放置热切割炸药，可炸开加固墙", "Exothermic charge breaches reinforced walls"),
-    "ash": Operator("ash", "灰烬", 0, ("m4a1", "mp9"), "deagle", "ash_round", ("frag", "breach"),
+    "ash": Operator("ash", "灰烬", 0, ("m4a1", "mp9"), "deagle", "ash_round", ("flash", "breach"),
                     "发射破墙弹，远程炸开软墙", "Breaching rounds blow soft walls from range"),
-    "sledge": Operator("sledge", "大锤", 0, ("m4a4", "mp5"), "dualies", "hammer", ("frag", "smoke"),
+    "sledge": Operator("sledge", "大锤", 0, ("m4a4", "mp5"), "dualies", "hammer", ("frag", "breach"),
                        "破墙锤，砸开软墙与地板", "Hammer smashes soft walls, floors and barricades"),
     "blitz": Operator("blitz", "闪盾", 0, (), "deagle", "flash_shield", ("frag", "smoke"),
                       "手持闪光盾，正面防弹并致盲", "Ballistic shield with a blinding flash"),

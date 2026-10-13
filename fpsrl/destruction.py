@@ -7,6 +7,7 @@ explosions / melee / breaching gadgets break them. Reinforced panels only yield 
 """
 from __future__ import annotations
 
+import base64
 import math
 
 import numpy as np
@@ -15,6 +16,14 @@ from .maps.base import Box
 
 PANEL = 0.75
 PANEL_HP = {"soft": 150.0, "floor": 220.0}
+
+
+def _bits(mask: np.ndarray) -> str:
+    return base64.b64encode(np.packbits(mask).tobytes()).decode("ascii")
+
+
+def _unbits(s: str, n: int) -> np.ndarray:
+    return np.unpackbits(np.frombuffer(base64.b64decode(s), dtype=np.uint8), count=n).astype(bool)
 
 
 class Panel:
@@ -87,23 +96,21 @@ class Destruction:
         p = self.panels[pid]
         return p.alive and not p.reinforced
 
-    def broken(self) -> list:
-        return [p.id for p in self.panels if not p.alive]
-
-    def reinforced(self) -> list:
-        return [p.id for p in self.panels if p.reinforced]
-
     def state(self) -> dict:
-        return {"v": self.version, "broken": self.broken(), "reinf": self.reinforced()}
+        """Network form: base64 bitsets over panel ids."""
+        broken = np.fromiter((not p.alive for p in self.panels), dtype=bool, count=len(self.panels))
+        reinf = np.fromiter((p.reinforced for p in self.panels), dtype=bool, count=len(self.panels))
+        return {"v": self.version, "broken": _bits(broken), "reinf": _bits(reinf)}
 
     def apply_state(self, st: dict):
         if not st or st.get("v") == self.version:
             return
-        broken = set(st.get("broken", ()))
-        reinf = set(st.get("reinf", ()))
+        n = len(self.panels)
+        broken = _unbits(st["broken"], n)
+        reinf = _unbits(st["reinf"], n)
         for p in self.panels:
-            p.alive = p.id not in broken
-            p.reinforced = p.id in reinf
+            p.alive = not broken[p.id]
+            p.reinforced = bool(reinf[p.id])
         self.version = st["v"]
         self.w.geometry_changed()
 
