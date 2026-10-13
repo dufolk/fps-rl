@@ -5,8 +5,8 @@ from ..bots import Bot
 from ..profile import Profile
 from ..sim import MatchConfig, World
 from .game import ClientSession, LocalSession
-from .ime import hold as hold_ime
-from .menu import MainMenu, PauseMenu, set_borderless
+from .ime import hold as hold_ime, place_window, top_hwnd
+from .menu import MainMenu, PauseMenu, release_pointer, set_borderless
 from .viewer import Viewer
 
 
@@ -26,6 +26,7 @@ class App:
         base.ignore("c")
         base.ignore("v")
         self.apply_volume()
+        self.viewer.on_reshape = self._on_reshape
         if self.profile.borderless:
             set_borderless(base, True, size)
         self.session = None
@@ -48,12 +49,25 @@ class App:
     def apply_borderless(self):
         set_borderless(self.base, self.profile.borderless, self.size)
 
+    def _on_reshape(self, win):
+        if win != self.base.win or not self.profile.borderless:
+            return
+        props = win.getProperties()
+        if props.getMinimized() or not props.getForeground():
+            return
+        if props.getXSize() < 64 or props.getYSize() < 64:
+            return
+        hwnd = top_hwnd(win)
+        if hwnd:
+            place_window(hwnd, True, self.size)
+
     # ------------------------------------------------------------------ flow
     def show_menu(self, message=None):
         if self.session is not None:
             self.session.stop()
             self.session = None
         self.pause.hide()
+        release_pointer(self.base)
         self.viewer.bind(self.menu_world, 0)
         self.viewer.set_cinematic(True)
         self.menu.show(message)

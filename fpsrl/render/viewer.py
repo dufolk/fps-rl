@@ -97,6 +97,7 @@ audio-library-name p3openal_audio
 notify-level-display error
 notify-level-glgsg error
 gl-coordinate-system default
+text-encoding utf8
 """)
     if not onscreen:
         loadPrcFileData("", "audio-library-name null\nwin-size 64 64\n")
@@ -274,6 +275,7 @@ class Viewer:
         self.grade_quad = None
         self.grade_mgr = None
         self.show_board = False
+        self.on_reshape = None
         self.death_cam = None
         if onscreen:
             base.win.setCloseRequestEvent("viewer-close")
@@ -332,6 +334,8 @@ class Viewer:
             self.base.camLens.setFov(self.fov)
             if self.vm is not None:
                 self.vm.set_aspect(aspect)
+        if self.on_reshape is not None:
+            self.on_reshape(win)
 
     def cycle_pov(self):
         if self.spectate_active():

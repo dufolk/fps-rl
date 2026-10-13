@@ -15,6 +15,7 @@ from ..maps import MAPS, MODES, default_mode, resolve_map_mode
 from ..profile import SENSITIVITY_MAX, SENSITIVITY_MIN, SENSITIVITY_STEP, clamp_sensitivity
 from ..weapons import PRIMARY_CHOICES, WEAPONS
 from .hud import load_font
+from .ime import begin_edit, end_edit, place_window, target_rect, top_hwnd
 from .skins import RARITY, SKIN_WEAPONS, SKINS, get_skin
 from .textures import make_texture
 
@@ -79,10 +80,31 @@ class UI:
             fn(*a)
         return run
 
-    def entry(self, parent, text, pos, width=12, scale=0.045):
+    def entry(self, parent, text, pos, width=12, scale=0.045, maxlen=24):
         e = DirectEntry(parent=parent, initialText=text, entryFont=self.font, scale=scale, width=width,
                         pos=(pos[0], 0, pos[1] - scale * 0.3), frameColor=(0.16, 0.17, 0.2, 0.95),
-                        text_fg=WHITE, relief=DGG.FLAT, pad=(0.3, 0.3), numLines=1, focus=0)
+                        text_fg=WHITE, relief=DGG.FLAT, numLines=1, focus=0, overflow=1, cursorKeys=1)
+        # the default hit target is a thin baseline; this is the dark box the label sits beside
+        e["frameSize"] = (0, width, -0.55, 1.45)
+
+        def focus_in(w=e, n=maxlen):
+            begin_edit(self.base.win, w, n)
+
+        def focus_out(w=e):
+            end_edit(self.base.win)
+            fn = getattr(w, "on_commit", None)
+            if fn is not None:
+                fn()
+
+        def commit(_text, w=e):
+            fn = getattr(w, "on_commit", None)
+            if fn is not None:
+                fn()
+
+        e["focusInCommand"] = focus_in
+        e["focusOutCommand"] = focus_out
+        e["command"] = commit
+        e.bind(DGG.B1PRESS, lambda _ev, w=e, n=maxlen: (w.__setitem__("focus", 1), begin_edit(self.base.win, w, n)))
         return e
 
     def slider(self, parent, value, rng, pos, command, width=0.42):
@@ -300,6 +322,7 @@ class MainMenu:
         self.status["text"] = text
 
     def _close_page(self):
+        end_edit(self.base.win)
         if self.preview is not None:
             self.preview.destroy()
             self.preview = None
@@ -552,13 +575,25 @@ class MainMenu:
         prof = self.app.profile
         self._title(page, L("设置", "Settings"))
         ui.label(page, L("玩家名称", "Player name"), (-1.0, 0.385), 0.042, DIM)
-        name = ui.entry(page, prof.name, (0.05, 0.4), 12)
+        name = ui.entry(page, prof.name, (0.05, 0.4), 16, maxlen=16)
 
         def set_name(_=None):
-            prof.name = name.get().strip()[:16] or prof.name
-            prof.save()
-        name["command"] = set_name
-        name["focusOutCommand"] = set_name
+            if getattr(name, "_saving", False):
+                return
+            name._saving = True
+            try:
+                try:
+                    raw = name.get()
+                except Exception:
+                    return
+                cleaned = raw.strip()[:16] or prof.name
+                prof.name = cleaned
+                if raw != cleaned:
+                    name.enterText(cleaned)
+                prof.save()
+            finally:
+                name._saving = False
+        name.on_commit = set_name
 
         def on_sens(v):
             prof.sensitivity = v
@@ -590,6 +625,8 @@ class MainMenu:
               prof.borderless, -0.21, flag("borderless"))
         ui.label(page, L("设置自动保存到 ~/.fpsrl/profile.json", "Settings are saved to ~/.fpsrl/profile.json"),
                  (-1.0, -0.66), 0.032, DIM)
+        name["focus"] = 1
+        begin_edit(self.base.win, name, 16)
         self._settings_save = lambda: (set_name(), prof.save())
 
     # ------------------------------------------------------------------ per frame
@@ -662,18 +699,49 @@ class PauseMenu:
         self.root.hide()
 
 
+def release_pointer(base) -> None:
+    """Visible cursor, absolute coordinates. A match leaves the pointer confined and hidden."""
+    if base.win is None:
+        return
+    props = WindowProperties()
+    props.setCursorHidden(False)
+    props.setMouseMode(WindowProperties.M_absolute)
+    base.win.requestProperties(props)
+
+
 def set_borderless(base, on: bool, windowed_size=(1600, 900)):
-    """Toggle desktop-sized borderless windowing. Exclusive fullscreen is never used."""
+    """Cover the monitor the window is already on. Exclusive fullscreen is never used.
+
+    Display-mode pixels and origin (0, 0) land on the wrong monitor once Windows is DPI-scaled
+    or a second screen is left of the primary. The snap uses the monitor rectangle in the
+    window's own coordinate space, then repeats once Panda applies the properties.
+    """
     props = WindowProperties()
     props.setFullscreen(False)
-    props.setUndecorated(on)
-    if on:
-        di = base.pipe.getDisplayInformation()
-        w, h = di.getDisplayModeWidth(0), di.getDisplayModeHeight(0)
-        if w <= 0:
-            w, h = 1920, 1080
-        props.setSize(w, h)
-        props.setOrigin(0, 0)
-    else:
-        props.setSize(*windowed_size)
+    props.setUndecorated(bool(on))
+    hwnd = top_hwnd(base.win)
+    x = y = w = h = 0
+    if hwnd:
+        x, y, w, h = target_rect(hwnd, on, windowed_size)
+    if w <= 0 or h <= 0:
+        if on:
+            di = base.pipe.getDisplayInformation()
+            w, h = di.getDisplayModeWidth(0), di.getDisplayModeHeight(0)
+            if w <= 0 or h <= 0:
+                w, h = 1920, 1080
+            x, y = 0, 0
+        else:
+            w, h = windowed_size
+    props.setOrigin(int(x), int(y))
+    props.setSize(int(w), int(h))
     base.win.requestProperties(props)
+    if not hwnd:
+        return
+    place_window(hwnd, on, windowed_size)
+    base.taskMgr.remove("borderless-snap")
+
+    def _later(task, hwnd=hwnd, borderless=on, size=windowed_size):
+        place_window(hwnd, borderless, size)
+        return task.done
+
+    base.taskMgr.doMethodLater(0.05, _later, "borderless-snap")
