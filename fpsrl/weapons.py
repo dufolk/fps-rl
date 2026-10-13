@@ -250,3 +250,17 @@ BUY_CATEGORIES = (
     ("grenade", "投掷物", "Grenades", ("frag", "smoke")),
 )
 SCOPED = tuple(n for n, s in WEAPONS.items() if s.scope_overlay)
+# primary weapon mix for bots in free-weapon modes (TDM / domination)
+BOT_PRIMARY_MIX = (("ak47", 0.22), ("m4a4", 0.14), ("m4a1", 0.12), ("famas", 0.08), ("mp5", 0.08),
+                   ("mp9", 0.06), ("uzi", 0.05), ("awm", 0.15), ("scar20", 0.05), ("m249", 0.05))
+
+
+def random_primary(rng) -> str:
+    """Draw from BOT_PRIMARY_MIX with a `random.Random` or numpy Generator."""
+    names, probs = zip(*BOT_PRIMARY_MIX)
+    x = rng.random() * sum(probs)
+    for n, p in zip(names, probs):
+        x -= p
+        if x <= 0:
+            return n
+    return names[-1]

@@ -33,10 +33,12 @@ class Profile:
     fullscreen: bool = False
     primary: str = "ak47"
     skins: dict = field(default_factory=dict)  # weapon -> skin key
-    single: dict = field(default_factory=lambda: {"team_size": 4, "difficulty": "normal", "team": 0,
-                                                  "kill_limit": 60, "time_limit": 420})
-    host: dict = field(default_factory=lambda: {"room": "运输船", "port": 47777, "team_size": 4,
-                                                "difficulty": "normal", "kill_limit": 60, "time_limit": 600})
+    single: dict = field(default_factory=lambda: {"map": "transport_ship", "mode": "tdm", "team_size": 4,
+                                                  "difficulty": "normal", "team": 0, "kill_limit": 60,
+                                                  "time_limit": 420})
+    host: dict = field(default_factory=lambda: {"room": "运输船", "port": 47777, "map": "transport_ship",
+                                                "mode": "tdm", "team_size": 4, "difficulty": "normal",
+                                                "kill_limit": 60, "time_limit": 600})
     last_ip: str = ""
     last_port: int = 47777
     team_pref: int = -1

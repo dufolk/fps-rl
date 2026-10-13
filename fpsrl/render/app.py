@@ -67,7 +67,8 @@ class App:
         p = self.profile
         s = p.single
         self._start(LocalSession(self.viewer, p, s["team_size"], s["difficulty"], s["team"], p.primary,
-                                 s["kill_limit"], s["time_limit"], on_escape=self.toggle_pause))
+                                 s["kill_limit"], s["time_limit"], on_escape=self.toggle_pause,
+                                 map_name=s.get("map", "transport_ship"), mode=s.get("mode")))
 
     def start_host(self):
         p = self.profile
@@ -75,7 +76,8 @@ class App:
         try:
             session = LocalSession(self.viewer, p, h["team_size"], h["difficulty"], 0, p.primary, h["kill_limit"],
                                    h["time_limit"], host={"room": h["room"], "port": h["port"]},
-                                   on_escape=self.toggle_pause)
+                                   on_escape=self.toggle_pause, map_name=h.get("map", "transport_ship"),
+                                   mode=h.get("mode"))
         except OSError as exc:
             self.show_menu(f"无法创建房间 (端口 {h['port']} 被占用?): {exc}" if self.menu.ui.cjk else
                            f"Cannot host on port {h['port']}: {exc}")

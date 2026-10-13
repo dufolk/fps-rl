@@ -17,15 +17,13 @@ from .bots import Bot
 from .maps import MAPS
 from .obs import ObsBuilder
 from .sim import Action, MatchConfig, World
-from .weapons import NUM_SLOTS, PRIMARY_CHOICES
+from .weapons import NUM_SLOTS, PRIMARY_CHOICES, random_primary
 
 YAW_BINS = np.array([-30.0, -15.0, -6.0, -2.0, 0.0, 2.0, 6.0, 15.0, 30.0])
 PITCH_BINS = np.array([-10.0, -3.0, 0.0, 3.0, 10.0])
 MD_NVEC = [3, 3, len(YAW_BINS), len(PITCH_BINS), 2, 2, 2, 2, 2, NUM_SLOTS + 1, 3, 2, 2]
 ACTION_FIELDS = ["move_forward", "move_right", "look_yaw", "look_pitch", "fire", "alt",
                  "jump", "crouch", "reload", "switch", "lean", "use", "gadget"]
-BOT_PRIMARY_MIX = (("ak47", 0.22), ("m4a4", 0.14), ("m4a1", 0.12), ("famas", 0.08), ("mp5", 0.08),
-                   ("mp9", 0.06), ("uzi", 0.05), ("awm", 0.15), ("scar20", 0.05), ("m249", 0.05))
 
 
 @dataclass
@@ -129,11 +127,10 @@ class _FPSBase:
             raise ValueError(f"unknown map {cfg.map_name!r}, choose from {sorted(MAPS)}")
         n = cfg.team_size
         rng = np.random.default_rng(cfg.seed)
-        names, probs = zip(*BOT_PRIMARY_MIX)
         primaries = []
         for aid in range(2 * n):
             if cfg.bot_primaries == "mixed":
-                primaries.append(str(rng.choice(names, p=np.array(probs) / sum(probs))))
+                primaries.append(random_primary(rng))
             else:
                 primaries.append(cfg.bot_primaries)
         for aid in controlled:

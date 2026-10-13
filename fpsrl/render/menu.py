@@ -11,8 +11,9 @@ from direct.gui.OnscreenImage import OnscreenImage
 from panda3d.core import (AmbientLight, Camera, DirectionalLight, NodePath, PerspectiveLens, TextNode,
                           TransparencyAttrib, Vec4, WindowProperties)
 
+from ..maps import MAPS, MODES, default_mode
 from ..profile import SENSITIVITY_MAX, SENSITIVITY_MIN, SENSITIVITY_STEP, clamp_sensitivity
-from ..weapons import WEAPONS
+from ..weapons import PRIMARY_CHOICES, WEAPONS
 from .hud import load_font
 from .skins import RARITY, SKIN_WEAPONS, SKINS, get_skin
 from .textures import make_texture
@@ -253,7 +254,8 @@ class MainMenu:
         self.left = base.a2dLeftCenter.attachNewNode("menu_left")
         self.top = base.a2dTopLeft.attachNewNode("menu_top")
         ui.label(self.top, "FPS-RL", (0.12, -0.2), 0.13, ACCENT)
-        ui.label(self.top, L("运输船  ·  Transport Ship", "Transport Ship"), (0.13, -0.27), 0.042, DIM)
+        ui.label(self.top, L("运输船 · 沙漠灰 · 占点小镇 · 银行", "Transport Ship · Desert 2 · HP Town · Bank"),
+                 (0.13, -0.27), 0.042, DIM)
         self.nav = {}
         items = [("single", L("单人训练", "Single Player")), ("host", L("创建房间", "Host LAN Room")),
                  ("join", L("加入房间", "Join LAN Room")), ("armory", L("武器仓库", "Armory")),
@@ -317,25 +319,47 @@ class MainMenu:
         DirectFrame(parent=page, frameColor=ACCENT, frameSize=(-1.05, -0.85, 0.535, 0.545))
 
     # ------------------------------------------------------------------ pages
-    def _match_options(self, page, cfg, z0, team=True):
+    def _match_options(self, page, cfg, z0, team=True, step=0.1):
         ui, L = self.ui, self.ui.L
         rows = {}
         z = z0
+        mode_row = {}
+
+        def mode_options(map_name):
+            return [(m, L(*MODES[m])) for m in MAPS[map_name][2]]
+
+        def on_map(map_name):
+            # rebuild the mode choices for the new map, keeping the mode when the map supports it
+            r = mode_row["row"]
+            cur = r.value
+            r.options = mode_options(map_name)
+            vals = [o[0] for o in r.options]
+            r.i = vals.index(cur) if cur in vals else 0
+            r._refresh()
+
+        map_name = cfg.get("map", "transport_ship")
+        map_name = map_name if map_name in MAPS else "transport_ship"
+        rows["map"] = Cycle(ui, page, L("地图", "Map"), [(k, L(v[0], v[1])) for k, v in MAPS.items()], map_name, z,
+                            on_map)
+        z -= step
+        rows["mode"] = mode_row["row"] = Cycle(ui, page, L("模式", "Mode"), mode_options(map_name),
+                                               cfg.get("mode", default_mode(map_name)), z)
+        z -= step
         rows["team_size"] = Cycle(ui, page, L("每队人数", "Team size"), [(n, f"{n} v {n}") for n in range(1, 7)],
                                   cfg.get("team_size", 4), z)
-        z -= 0.12
+        z -= step
         rows["difficulty"] = Cycle(ui, page, L("机器人难度", "Bot difficulty"),
                                    [(k, L(zh, en)) for k, zh, en in DIFFICULTIES], cfg.get("difficulty", "normal"), z)
-        z -= 0.12
+        z -= step
         if team:
             rows["team"] = Cycle(ui, page, L("阵营", "Team"), [(0, "BL"), (1, "GR")], cfg.get("team", 0), z)
-            z -= 0.12
-        rows["primary"] = Cycle(ui, page, L("主武器", "Primary"), [("ak47", "AK-47"), ("awm", "AWM")],
-                                self.app.profile.primary, z)
-        z -= 0.12
-        rows["kill_limit"] = Cycle(ui, page, L("击杀目标", "Kill limit"),
+            z -= step
+        rows["primary"] = Cycle(ui, page, L("主武器 (团竞/占点)", "Primary (TDM / Dom)"),
+                                [(n, WEAPONS[n].display) for n in PRIMARY_CHOICES], self.app.profile.primary, z)
+        z -= step
+        rows["kill_limit"] = Cycle(ui, page, L("击杀目标 (团竞)", "Kill limit (TDM)"),
                                    [(n, str(n)) for n in (20, 40, 60, 100, 150)], cfg.get("kill_limit", 60), z)
-        z -= 0.12
+        z -= step
         rows["time_limit"] = Cycle(ui, page, L("时间限制", "Time limit"),
                                    [(m * 60, L(f"{m} 分钟", f"{m} min")) for m in (5, 7, 10, 15, 20)],
                                    cfg.get("time_limit", 420), z)
@@ -367,7 +391,7 @@ class MainMenu:
         room = ui.entry(page, prof.host.get("room", "FPS-RL"), (0.05, 0.3), 14)
         ui.label(page, L("端口", "Port"), (-1.0, 0.165), 0.042, DIM)
         port = ui.entry(page, str(prof.host.get("port", 47777)), (0.05, 0.18), 6)
-        rows, z = self._match_options(page, prof.host, 0.06, team=False)
+        rows, z = self._match_options(page, prof.host, 0.06, team=False, step=0.088)
 
         def start():
             try:
@@ -412,7 +436,9 @@ class MainMenu:
                                                                  "No rooms found. Check the host and firewall."),
                                               (-1.0, 0.27), 0.036, DIM))
         for i, r in enumerate(rooms[:6]):
-            text = f"{r.get('room', '?')}   {r['ip']}:{r.get('port')}   " \
+            m = MAPS.get(r.get("map"), ("?", "?"))
+            md = MODES.get(r.get("mode"), ("?", "?"))
+            text = f"{r.get('room', '?')}   {r['ip']}:{r.get('port')}   {L(m[0], m[1])}·{L(md[0], md[1])}   " \
                    f"{L('玩家', 'players')} {r.get('players', '?')}/{r.get('slots', '?')}   " \
                    f"{L('比分', 'score')} {'-'.join(str(s) for s in r.get('score', []))}"
             self.room_widgets.append(ui.button(self.room_frame, text, (0.0, 0.31 - i * 0.095), self._join,

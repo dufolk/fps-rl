@@ -36,6 +36,23 @@ class Siege(RoundMode):
         self.ops[a.id]["attack" if o.side == 0 else "defend"] = name
         return True
 
+    def choose_operator(self, a, name: str, primary: str | None = None) -> bool:
+        """Player pick from the operator menu: applies at once during prep, otherwise next round."""
+        o = OPERATORS.get(name)
+        if o is None or o.side != self.side(a.team):
+            return False
+        self.set_operator(a, name)
+        if primary in o.primaries:
+            a.loadout["primary"] = primary
+        if self.phase == "prep" and a.alive:
+            self.give_loadout(a)
+            a.busy = None
+            a.slot = -1  # force a switch event so viewers redraw the new weapon
+            self.w.switch_weapon(a, self.w.best_slot(a))
+            a.last_slot = SLOT_PISTOL if a.slot == SLOT_PRIMARY else SLOT_MELEE
+            self.w._emit("operator", agent=a.id, name=name)
+        return True
+
     def operator_of(self, a):
         side = self.side(a.team)
         return OPERATORS[self.ops[a.id]["attack" if side == ATT else "defend"]]
