@@ -20,8 +20,8 @@ from panda3d.core import Filename, KeyboardButton, MouseButton, WindowProperties
 from ..bots import Bot
 from ..maps import MAPS, default_mode
 from ..profile import SENSITIVITY_STEP, clamp_sensitivity
-from ..net.protocol import (B_ALT, B_FIRE, B_RELOAD, apply_agent, apply_world, encode_input, input_to_action,
-                            world_state)
+from ..net.protocol import (B_ALT, B_FIRE, B_RELOAD, apply_agent, apply_client_cmd, apply_world, encode_input,
+                            input_to_action, world_state)
 from ..sim import TEAM_NAMES, Action, MatchConfig, World
 from ..weapons import NUM_SLOTS, PRIMARY_CHOICES, random_primary
 from .viewer import BASE_HFOV, Viewer
@@ -477,16 +477,7 @@ class LocalSession:
                 changed = True
                 self._notice(f"{conn.name} 离开了房间" if self._zh() else f"{conn.name} left")
             elif kind == "cmd" and conn.aid is not None:
-                c = msg.get("c")
-                v = msg.get("v")
-                agent = w.agents[conn.aid]
-                if c == "primary" and v in PRIMARY_CHOICES:
-                    w.set_primary(agent, v)
-                elif c == "buy" and isinstance(v, str):
-                    w.buy(agent, v)
-                elif c == "operator" and isinstance(v, str) and hasattr(w.mode, "choose_operator"):
-                    p = msg.get("p")
-                    w.mode.choose_operator(agent, v, p if isinstance(p, str) else None)
+                apply_client_cmd(w, w.agents[conn.aid], msg)
         if changed:
             roster = self._roster()
             for aid, _, skins, _h in roster:

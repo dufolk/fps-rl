@@ -15,7 +15,7 @@ import struct
 import numpy as np
 
 from ..sim import Action, Projectile, Smoke, WeaponState
-from ..weapons import NUM_SLOTS, WEAPONS
+from ..weapons import NUM_SLOTS, PRIMARY_CHOICES, WEAPONS
 
 VERSION = 2
 DEFAULT_PORT = 47777
@@ -108,6 +108,23 @@ def input_to_action(inp: dict, agent) -> Action:
                   fire=bool(b & B_FIRE), alt=bool(b & B_ALT), jump=bool(b & B_JUMP), crouch=bool(b & B_CROUCH),
                   walk=bool(b & B_WALK), reload=bool(b & B_RELOAD), switch=inp["sw"], lean=inp["lean"],
                   use=bool(b & B_USE), gadget=bool(b & B_GADGET))
+
+
+def apply_client_cmd(world, agent, msg: dict) -> bool:
+    """Host side of a client {"t": "cmd"} message: primary pick, buy, operator pick."""
+    c = msg.get("c")
+    v = msg.get("v")
+    if not isinstance(v, str):
+        return False
+    if c == "primary" and v in PRIMARY_CHOICES:
+        world.set_primary(agent, v)
+        return True
+    if c == "buy":
+        return world.buy(agent, v)
+    if c == "operator" and hasattr(world.mode, "choose_operator"):
+        p = msg.get("p")
+        return world.mode.choose_operator(agent, v, p if isinstance(p, str) else None)
+    return False
 
 
 # ----------------------------------------------------------------------------- world state

@@ -8,8 +8,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fpsrl.net import ConnectError, NetClient, NetServer  # noqa: E402
-from fpsrl.net.protocol import (agent_state, apply_agent, apply_world, decode_input, encode_input,  # noqa: E402
-                                input_to_action, world_state)
+from fpsrl.net.protocol import (agent_state, apply_agent, apply_client_cmd, apply_world, decode_input,  # noqa: E402
+                                encode_input, input_to_action, world_state)
 from fpsrl.sim import Action, MatchConfig, World  # noqa: E402
 
 
@@ -92,6 +92,13 @@ def test_server_client_session():
         mirror = World(MatchConfig(team_size=2, seed=5))
         apply_world(mirror, snaps[-1]["w"], own=2)
         assert (abs(mirror.agents[2].pos - me.pos) < 1e-3).all()
+
+        client.send({"t": "cmd", "c": "primary", "v": "m4a1"})
+        client.send({"t": "cmd", "c": "buy", "v": "m4a1"})  # tdm has no shop
+        cmds = []
+        _wait(lambda: cmds.extend(m for k, c, m in server.poll() if k == "cmd" and c is conn) or len(cmds) >= 2)
+        assert [apply_client_cmd(world, me, m) for m in cmds] == [True, False]
+        assert me.primary == "m4a1"
 
         # room full -> the second client gets a readable reason instead of a dead socket
         def pump_full():
