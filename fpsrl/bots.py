@@ -10,11 +10,12 @@ from .geometry import point_in_poly, poly_center
 from .modes.rounds import ATT, DEF, RoundMode
 from .nav import NavGrid
 from .sim import IDLE, Action, Agent, World, angles_to, wrap180
-from .weapons import SLOT_BOMB, SLOT_FRAG, SLOT_GADGET, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY, SLOT_SMOKE
+from .weapons import (SLOT_BOMB, SLOT_FIRE, SLOT_FLASH, SLOT_FRAG, SLOT_GADGET, SLOT_MELEE, SLOT_PISTOL,
+                      SLOT_PRIMARY, SLOT_SMOKE, WEAPONS)
 
 DIFFICULTY_LEVELS = {"easy": 0.2, "normal": 0.5, "hard": 0.85, "insane": 1.0}
 # tasks the bot keeps doing even when it hears / remembers enemies
-FORCED_TASKS = ("plant", "defuse", "fetch", "reinforce", "breach")
+FORCED_TASKS = ("plant", "defuse", "fetch", "reinforce", "breach", "setup", "armor", "ash")
 BUSY_TASKS = ("plant", "defuse", "reinforce", "barricade", "place")
 
 
@@ -69,6 +70,7 @@ class Bot:
         self.jump_until = 0.0
         self.investigate = None
         self.grenade_state = None
+        self.grenade_slot = SLOT_FRAG
         self.grenade_until = 0.0
         self.was_alive = False
         self.task = None
@@ -76,6 +78,13 @@ class Bot:
         self.stuck_n = 0
         self.bash_until = 0.0
         self.breached = None  # round uid in which this bot is done breaching
+        self.hold_look = None
+        self.entry_flash = None
+        self.give_up: set = set()
+        self.setup_since = 0.0
+        self.setup_t0 = 0.0
+        self.setup_for = None
+        self.setup_mag = -1
         self.drone_path: list[np.ndarray] = []
         self.drone_i = 0
         self.drone_replan = 0.0
@@ -168,25 +177,19 @@ class Bot:
     def _dom_objective(self, m, a):
         if not m.points:
             return None, None, 0.0
-        cur = self.task_data if self.task == "capture" else None
-        if cur is not None and (m.owner[cur] != a.team or m.present[cur][1 - a.team]) \
-                and self.rng.random() < 0.8:
-            k = cur
-        else:
-            scores = []
-            for i, c in enumerate(m.centers):
-                d = math.hypot(c[0] - a.pos[0], c[1] - a.pos[1])
-                s = 30.0 / (8.0 + d)
-                if m.owner[i] != a.team:
-                    s *= 3.0
-                if m.present[i][1 - a.team]:
-                    s *= 1.5
-                scores.append(s)
-            p = np.array(scores) ** 2
-            k = int(self.rng.choice(len(p), p=p / p.sum()))
+        k = m.active
+        if k < 0:
+            # waiting for the next point: drift toward the middle of the ones still to play
+            left = [i for i in range(len(m.points)) if not m.played[i]]
+            if not left:
+                return None, None, 0.0
+            c = np.mean([m.centers[i] for i in left], axis=0)
+            return np.array([c[0], c[1], a.pos[2]]), "capture", 0.3
         self.task_data = k
         hunter = self.aid % 4 == 3
-        bias = 0.45 if hunter else (0.85 if m.owner[k] != a.team else 0.5)
+        behind = m.cap[a.team] <= m.cap[1 - a.team]
+        enemy_on = m.present[1 - a.team] > 0
+        bias = 0.45 if hunter else (0.9 if behind or enemy_on else 0.75)
         return self._zone_point(m.points[k]), "capture", bias
 
     def _team_site(self, m, team) -> int:
@@ -222,6 +225,24 @@ class Bot:
             site = self._team_site(m, a.team)
             if site < 0:
                 return None, None, 0.0
+            ash = a.inv.get(SLOT_GADGET)
+            if m.name == "r6" and ash is not None and ash.name == "ash_round" and ash.mag > 0:
+                t = self.task_data if self.task == "ash" else None
+                if t is None or not self.world.destruct.panels[t[0]].alive:
+                    t = self._wall_target(m, a, [site], outside=True)
+                    if t is not None:
+                        pid, stand, look = t
+                        back = stand - look
+                        back[2] = 0.0
+                        n = float(np.linalg.norm(back)) or 1.0
+                        stand = stand + back / n * 5.0
+                        node = self.nav.nearest_cell(stand)
+                        if node >= 0:
+                            stand = self.nav.nodes[node].copy()
+                        t = (pid, stand, look)
+                if t is not None:
+                    self.task_data = t
+                    return t[1], "ash", 1.0
             slot = self._breach_tool(a)
             if m.name == "r6" and slot is not None and self.breached != m.round_uid:
                 t = self.task_data if self.task == "breach" else None
@@ -235,6 +256,10 @@ class Bot:
         # defenders
         if m.phase == "planted" and b is not None:
             return np.asarray(b["pos"], dtype=np.float64).copy(), "defuse", 1.0
+        if m.phase == "prep" and m.name == "r6":
+            setup = self._setup_goal(m, a)
+            if setup is not None:
+                return setup
         if m.phase == "prep" and getattr(m, "reinforce_left", 0) > 0:
             t = self.task_data if self.task == "reinforce" else None
             if t is None or not self.world.destruct.panel_soft(t[0]):
@@ -246,8 +271,145 @@ class Bot:
             return None, None, 0.0
         mates = sorted(o.id for o in m.members(a.team))
         site = m.active_sites[mates.index(a.id) % len(m.active_sites)]
-        bias = 0.9 if m.name == "r6" else 0.65
-        return self._zone_point(m.sites[site], 0.4), "hold", bias
+        if m.name == "r6" and m.phase == "live":
+            fresh = [(t, p) for t, p in self.last_seen.values() if self.world.time - t < 6.0]
+            if fresh:
+                p = max(fresh)[1]
+                if math.hypot(p[0] - a.pos[0], p[1] - a.pos[1]) > 5.0:
+                    return p.copy(), "rotate", 0.85
+            stand, look = self._anchor(m, a, site)
+            self.hold_look = look
+            return stand, "hold", 0.95
+        return self._zone_point(m.sites[site], 0.4), "hold", 0.65
+
+    def _anchor(self, m, a, site):
+        """Stand just inside a door of `site` and watch it. Cached per bot per round."""
+        key = (m.round_uid, a.id, "anchor")
+        cached = Bot._plans.get(key)
+        if cached is not None:
+            return cached
+        zone = m.sites[site]
+        c = np.asarray(m.site_centers[site], dtype=np.float64)
+        zf = zone.get("z", zone.get("zmin", -0.5) + 0.5)
+        claimed = Bot._plans.setdefault((m.round_uid, a.team, "doors"), set())
+        best, bd = None, 1e9
+        for i, s in enumerate(self.world.map.objectives.get("slots", [])):
+            if i in claimed:
+                continue
+            sc = (np.asarray(s["mn"]) + np.asarray(s["mx"])) * 0.5
+            if abs(sc[2] - (zf + 1.0)) > 2.2:
+                continue
+            d = math.hypot(sc[0] - c[0], sc[1] - c[1])
+            if not 0.6 < d < 8.0:
+                continue
+            if d < bd:
+                best, bd = (i, sc), d
+        if best is None:
+            stand = self._zone_point(zone, 0.2)
+            away = stand[:2] - c
+            n = float(np.linalg.norm(away)) or 1.0
+            look = np.array([stand[0] + away[0] / n * 4.0, stand[1] + away[1] / n * 4.0, stand[2] + 1.3])
+        else:
+            i, sc = best
+            claimed.add(i)
+            inward = c - sc[:2]
+            n = float(np.linalg.norm(inward)) or 1.0
+            stand = np.array([sc[0] + inward[0] / n * 1.4, sc[1] + inward[1] / n * 1.4, zf])
+            node = self.nav.nearest_cell(stand)
+            if node >= 0 and np.linalg.norm(self.nav.nodes[node] - stand) < 1.2:
+                stand = self.nav.nodes[node].copy()
+            look = np.array([sc[0], sc[1], stand[2] + 1.2])
+        Bot._plans[key] = (stand, look)
+        return stand, look
+
+    def _can_reach(self, a, stand) -> bool:
+        path = self.nav.find_path(a.pos, stand)
+        return bool(path) and float(np.linalg.norm(path[-1][:2] - np.asarray(stand)[:2])) < 1.3
+
+    def _reachable_near(self, a, point):
+        """A point on the navmesh near `point` that `a` can actually walk to."""
+        path = self.nav.find_path(a.pos, point)
+        if not path or float(np.linalg.norm(path[-1][:2] - np.asarray(point)[:2])) > 4.0:
+            return None
+        return path[-1].copy()
+
+    def _door_target(self, m, a):
+        """(stand, look) facing an unclaimed doorway of the defended sites, for castle / kapkan."""
+        claimed = Bot._plans.setdefault((m.round_uid, a.team, "doors"), set())
+        best, bd = None, 1e9
+        for si in m.active_sites:
+            c = np.asarray(m.site_centers[si], dtype=np.float64)
+            zf = m.sites[si].get("z", m.sites[si].get("zmin", -0.5) + 0.5)
+            for i, s in enumerate(self.world.map.objectives.get("slots", [])):
+                if i in claimed:
+                    continue
+                sc = (np.asarray(s["mn"]) + np.asarray(s["mx"])) * 0.5
+                if abs(sc[2] - (zf + 1.0)) > 2.2:
+                    continue
+                d = math.hypot(sc[0] - c[0], sc[1] - c[1])
+                far = math.hypot(sc[0] - a.pos[0], sc[1] - a.pos[1])
+                if d > 8.0 or d + 0.15 * far >= bd:
+                    continue
+                inward = c - sc[:2]
+                n = float(np.linalg.norm(inward)) or 1.0
+                stand = np.array([sc[0] + inward[0] / n * 1.15, sc[1] + inward[1] / n * 1.15, zf])
+                node = self.nav.nearest_cell(stand)
+                if node < 0 or np.linalg.norm(self.nav.nodes[node] - stand) > 1.2:
+                    continue
+                stand = self.nav.nodes[node].copy()
+                if not self._can_reach(a, stand):
+                    continue
+                best, bd = (i, stand, sc, zf), d + 0.15 * far
+        if best is None:
+            return None
+        i, stand, sc, zf = best
+        claimed.add(i)
+        return stand, np.array([sc[0], sc[1], zf + 1.2])
+
+    def _setup_goal(self, m, a):
+        """One defender gadget placement: unique gadget first (two charges), then a generic one
+        once the reinforcements are down. Armor packs on the ground get picked up immediately."""
+        w = self.world
+        for it in w.gadgets.items.values():
+            if it["kind"] == "armor_bag" and it["team"] == a.team and it.get("charges", 0) > 0 and a.armor <= 0:
+                self.task_data = it["pos"].copy()
+                return it["pos"].copy(), "armor", 1.0
+        op = m.operator_of(a)
+        reinforce_pending = getattr(m, "reinforce_left", 0) > 0
+        names = [op.gadget]
+        if not reinforce_pending:
+            names += list(op.generics)
+        for name in names:
+            if name in self.give_up:
+                continue
+            spec = WEAPONS[name]
+            if spec.kind != "gadget" or spec.place in ("", "launch"):
+                continue
+            ws = a.inv.get(spec.slot)
+            if ws is None or ws.name != name or ws.mag <= 0:
+                continue
+            used = spec.mag - ws.mag
+            if used >= (1 if name in ("armor_bag", "dshield") or name in op.generics else 2):
+                continue
+            if self.task == "setup" and isinstance(self.task_data, tuple) and self.task_data[0] == name:
+                return self.task_data[1], "setup", 1.0
+            if spec.place == "slot":
+                door = self._door_target(m, a)
+                if door is None:
+                    continue
+                stand, look = door
+            else:
+                site = m.active_sites[a.id % len(m.active_sites)]
+                zone = m.sites[site]
+                zf = zone.get("z", zone.get("zmin", -0.5) + 0.5)
+                center = np.asarray(m.site_centers[site], dtype=np.float64)
+                stand = self._reachable_near(a, np.array([center[0], center[1], zf]))
+                if stand is None:
+                    continue
+                look = np.array([center[0], center[1], stand[2] + 0.9])
+            self.task_data = (name, stand, look)
+            return stand, "setup", 1.0
+        return None
 
     def _wall_target(self, m, a, sites, outside: bool, hard: bool = False):
         """(panel id, stand point, look point) of a soft wall next to one of `sites`, approached from
@@ -321,6 +483,10 @@ class Bot:
         w = self.world
         m = w.mode
         task = self.task
+        if task in ("reinforce", "setup", "armor") and getattr(m, "phase", "") != "prep":
+            self.task = None
+            self.replan_at = w.time
+            return False
         if task == "plant":
             if SLOT_BOMB not in a.inv or m.site_at(a.pos) < 0 or not a.on_ground:
                 return False
@@ -352,6 +518,78 @@ class Bot:
             if ready is None:
                 return False
             act.use = ready and not a.prev_use
+            return True
+        if task == "armor":
+            pos = self.task_data
+            if a.armor > 0 or not any(it["kind"] == "armor_bag" and it["team"] == a.team and it.get("charges", 0) > 0
+                                      for it in w.gadgets.items.values()):
+                self.task = None
+                self.replan_at = w.time
+                return False
+            if math.hypot(pos[0] - a.pos[0], pos[1] - a.pos[1]) > 1.2:
+                return False
+            act.move_forward = act.move_right = 0.0
+            act.use = not a.prev_use
+            return True
+        if task == "setup":
+            name, stand, look = self.task_data
+            spec = WEAPONS[name]
+            ws = a.inv.get(spec.slot)
+            if ws is None or ws.name != name or ws.mag <= 0 or name in self.give_up:
+                self.task = None
+                self.replan_at = w.time
+                return False
+            if self.setup_for != name:
+                self.setup_for = name
+                self.setup_t0 = w.time
+                self.setup_since = 0.0
+                self.setup_mag = -1
+            if self.stuck_n >= 2 and math.hypot(stand[0] - a.pos[0], stand[1] - a.pos[1]) > 1.5:
+                # the stand is past a barricade; drop the gadget in the corridor instead of stalling
+                back = a.pos - stand
+                back[2] = 0.0
+                n = float(np.linalg.norm(back)) or 1.0
+                look = a.pos + back / n * 2.0
+                look[2] = a.pos[2] + 0.8
+                stand = a.pos.copy()
+                self.task_data = (name, stand, look)
+                self.stuck_n = 0
+                self.setup_t0 = w.time
+            ready = self._work_at(a, act, dt, stand, look)
+            if ready is None:
+                if w.time - self.setup_t0 > 12.0:
+                    self.give_up.add(name)
+                    self.task = None
+                    self.replan_at = w.time
+                return False
+            if self.setup_mag != ws.mag:
+                self.setup_mag = ws.mag
+                self.setup_since = w.time
+            elif w.time - self.setup_since > 4.0:
+                self.give_up.add(name)
+                self.task = None
+                self.replan_at = w.time
+                return False
+            if a.slot != spec.slot:
+                act.switch = spec.slot
+            elif ready and w.time >= a.ready_at:
+                act.fire = not a.prev_fire
+            return True
+        if task == "ash":
+            pid, stand, look = self.task_data
+            p = w.destruct.panels[pid]
+            ws = a.inv.get(SLOT_GADGET)
+            if not p.alive or ws is None or ws.name != "ash_round" or ws.mag <= 0:
+                self.task = None
+                self.replan_at = w.time
+                return False
+            ready = self._work_at(a, act, dt, stand, look)
+            if ready is None:
+                return False
+            if a.slot != SLOT_GADGET:
+                act.switch = SLOT_GADGET
+            elif ready and w.time >= a.ready_at:
+                act.fire = not a.prev_fire
             return True
         if task == "breach":
             pid, stand, look = self.task_data
@@ -455,10 +693,18 @@ class Bot:
                 w.buy(a, want)
         if a.inv.get(SLOT_PRIMARY) is None and pistol_round and a.money >= 700 and self.rng.random() < 0.4:
             w.buy(a, "deagle")
+        if a.armor <= 0 and a.money >= (1000 if pistol_round else 1800):
+            w.buy(a, "kevlar_helmet")
+        elif a.armor > 0 and not a.helmet and a.money >= 350:
+            w.buy(a, "kevlar_helmet")
         if a.money >= 300 and SLOT_FRAG not in a.inv and (not pistol_round or self.rng.random() < 0.5):
             w.buy(a, "frag")
+        if a.money >= 200 and SLOT_FLASH not in a.inv and self.rng.random() < 0.55:
+            w.buy(a, "flash")
         if a.money >= 700 and SLOT_SMOKE not in a.inv and self.rng.random() < 0.5:
             w.buy(a, "smoke")
+        if a.money >= 400 and SLOT_FIRE not in a.inv and self.rng.random() < 0.4:
+            w.buy(a, "molotov")
         if side == DEF and a.money >= 400 and SLOT_BOMB not in a.inv and self.rng.random() < 0.6:
             w.buy(a, "defuser")
         if a.slot != w.best_slot(a):
@@ -475,7 +721,7 @@ class Bot:
         if not self.was_alive:
             self.was_alive = True
             self._plan(self._pick_goal())
-        if w.mode.name == "bomb":
+        if getattr(w.mode, "economy", False):
             self.maybe_buy(a)
         if a.busy is not None and a.busy[0] in BUSY_TASKS:
             return self._continue_busy(a)
@@ -565,6 +811,16 @@ class Bot:
         tol = max(0.8, math.degrees(math.atan2(0.32, max(dist, 0.5)))) * (1.6 - 0.5 * self.skill)
         on_target = abs(wrap180(ey)) < tol and abs(ep) < tol * 1.3
 
+        shield = a.inv.get(SLOT_GADGET)
+        if shield is not None and shield.spec.kind == "shield" and dist < 16.0:
+            if a.slot != SLOT_GADGET:
+                act.switch = SLOT_GADGET
+            elif reacted and on_target and dist < 9.0 and shield.mag > 0:
+                act.fire = not a.prev_fire
+            act.move_forward = 1.0 if dist > 2.2 else 0.0
+            act.move_right = self.strafe * 0.4
+            return
+
         if spec.kind == "gun" and ws.mag == 0 and ws.reserve > 0:
             act.reload = True
         elif spec.kind == "gun":
@@ -629,24 +885,47 @@ class Bot:
             else:
                 act.move_forward, act.move_right = self._move_axes(a, d)
                 look_yaw = math.degrees(math.atan2(d[1], d[0]))
-        # glance towards the most recent sighting
+        anchored = (self.task == "hold" and self.hold_look is not None and self.goal is not None
+                    and math.hypot(self.goal[0] - a.pos[0], self.goal[1] - a.pos[1]) < 1.4
+                    and abs(self.goal[2] - a.pos[2]) < 1.5)
+        # glance towards the most recent sighting; an anchor watches its door otherwise
         recent = [(t, p) for t, p in self.last_seen.values() if now - t < 3.0]
         if recent:
             p = max(recent, key=lambda x: x[0])[1]
             look_yaw, look_pitch = angles_to(a.eye(), p + np.array([0, 0, 1.4]))
+        elif anchored:
+            look_yaw, look_pitch = angles_to(a.eye(), self.hold_look)
+            self.replan_at = max(self.replan_at, now + 2.5)
         bashing = now < self.bash_until
         if bashing:
             look_pitch = 0.0
         dyaw, dpitch, _, _ = self._turn_towards(a, look_yaw, look_pitch, dt, 6.0)
         act.look_yaw, act.look_pitch = dyaw, dpitch
         # re-derive move axes after the turn is applied this tick
-        if self.path and self.path_i < len(self.path):
+        if self.path and self.path_i < len(self.path) and not anchored:
             d = self.path[self.path_i] - a.pos
             yaw_saved = a.yaw
             a.yaw = (a.yaw + dyaw) % 360.0
             act.move_forward, act.move_right = self._move_axes(a, d)
             a.yaw = yaw_saved
+        if anchored:
+            act.move_forward = act.move_right = 0.0
+            act.crouch = self.aid % 2 == 0
         if self._task_act(a, act, dt):
+            return
+        m = w.mode
+        if m.name == "r6" and m.side(a.team) == ATT and self.task in ("push", "guard") \
+                and self.entry_flash != m.round_uid:
+            site = self._team_site(m, a.team)
+            if site >= 0:
+                c = m.site_centers[site]
+                nades = self._nades(a)
+                if math.hypot(c[0] - a.pos[0], c[1] - a.pos[1]) < 14.0 and "flash" in nades:
+                    self.entry_flash = m.round_uid
+                    self.grenade_slot = nades["flash"]
+                    self.grenade_state = np.array([c[0], c[1], a.pos[2] + 0.5])
+                    self.grenade_until = w.time + 1.6
+        if self._shoot_gadget(a, act, dt):
             return
         ws = a.weapon
         if bashing:
@@ -677,34 +956,82 @@ class Bot:
             self.stuck_check = now + 1.0
         act.jump = now < self.jump_until
 
+    def _shoot_gadget(self, a: Agent, act: Action, dt: float) -> bool:
+        """Aim at an enemy drone, camera, trap, jammer or breach charge. Stops to kill one up close."""
+        if self.task in FORCED_TASKS:
+            return False
+        w = self.world
+        eye = a.eye()
+        best, bd = None, 16.0
+        for it in w.gadgets.items.values():
+            if it["kind"] not in ("drone", "camera", "jammer", "edd", "charge") or it["team"] == a.team:
+                continue
+            dist = float(np.linalg.norm(it["pos"] - eye))
+            if dist > bd or not w.segment_clear(eye, it["pos"], smoke=True):
+                continue
+            yaw_to, _ = angles_to(eye, it["pos"])
+            if dist > 4.0 and abs(wrap180(yaw_to - a.yaw)) > self.fov:
+                continue
+            best, bd = it, dist
+        if best is None:
+            return False
+        yaw, pitch = angles_to(eye, best["pos"])
+        dyaw, dpitch, ey, ep = self._turn_towards(a, yaw, pitch, dt, self.gain)
+        act.look_yaw, act.look_pitch = dyaw, dpitch
+        if a.weapon.spec.kind != "gun":
+            act.switch = w.best_slot(a)
+        elif abs(ey) < 3.5 and abs(ep) < 3.5:
+            act.fire = True if a.weapon.spec.auto else not a.prev_fire
+        if bd < 9.0:
+            act.move_forward = act.move_right = 0.0
+        return True
+
     # ------------------------------------------------------------------ grenades
+    def _nades(self, a: Agent) -> dict:
+        owned = {}
+        for slot in (SLOT_FRAG, SLOT_FLASH, SLOT_FIRE):
+            ws = a.inv.get(slot)
+            if ws is not None and ws.spec.kind == "grenade" and ws.mag > 0:
+                owned[ws.name] = slot
+        return owned
+
     def _maybe_grenade(self, a: Agent):
         w = self.world
-        frag = a.inv.get(SLOT_FRAG)
-        if frag is None or frag.spec.kind != "grenade" or frag.mag <= 0 \
-                or self.rng.random() > 0.01 + 0.02 * self.skill:
+        owned = self._nades(a)
+        if not owned or self.rng.random() > 0.01 + 0.02 * self.skill:
             return
         recent = [(t, p) for t, p in self.last_seen.values() if 0.8 < w.time - t < 4.0]
         if not recent:
             return
         _, p = max(recent, key=lambda x: x[0])
         dist = float(np.hypot(*(p[:2] - a.pos[:2])))
-        if 9.0 < dist < 24.0:
-            self.grenade_state = p.copy()
-            self.grenade_until = w.time + 1.6
+        if not (8.0 < dist < 26.0):
+            return
+        if dist > 16.0 and "flash" in owned:
+            name = "flash"
+        elif dist < 15.0 and "molotov" in owned:
+            name = "molotov"
+        elif "frag" in owned:
+            name = "frag"
+        else:
+            name = next(iter(owned))
+        self.grenade_slot = owned[name]
+        self.grenade_state = p.copy()
+        self.grenade_until = w.time + 1.6
 
     def _grenade(self, a: Agent, act: Action, dt: float):
         w = self.world
-        frag = a.inv.get(SLOT_FRAG)
-        if w.time > self.grenade_until or frag is None or frag.mag <= 0:
+        slot = self.grenade_slot
+        ws = a.inv.get(slot)
+        if w.time > self.grenade_until or ws is None or ws.spec.kind != "grenade" or ws.mag <= 0:
             self.grenade_state = None
             return
-        if a.slot != SLOT_FRAG:
-            act.switch = SLOT_FRAG
+        if a.slot != slot:
+            act.switch = slot
             return
         p = self.grenade_state
         dist = float(np.hypot(*(p[:2] - a.pos[:2])))
-        v = 17.0
+        v = ws.spec.throw_speed
         s = min(1.0, C.GRAVITY * dist / (v * v))
         pitch = math.degrees(0.5 * math.asin(s)) - 2.0
         yaw = math.degrees(math.atan2(p[1] - a.pos[1], p[0] - a.pos[0]))

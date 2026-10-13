@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 SLOT_PRIMARY, SLOT_PISTOL, SLOT_MELEE, SLOT_FRAG, SLOT_SMOKE, SLOT_GADGET, SLOT_BOMB = 1, 2, 3, 4, 5, 6, 7
-NUM_SLOTS = 7
+SLOT_FLASH, SLOT_FIRE = 8, 9
+NUM_SLOTS = 9
 
 
 def _pattern(rise, yaw, tail_rise=0.3, tail_yaw=(-0.4, 0.5, -0.35), n=30):
@@ -90,6 +91,9 @@ class WeaponSpec:
     smoke_radius: float = 0.0
     smoke_duration: float = 0.0
     flash_radius: float = 0.0
+    fire_radius: float = 0.0
+    fire_duration: float = 0.0
+    fire_dps: float = 0.0
     # placeable gadgets / bomb
     place: str = ""  # "wall" | "ground" | "slot" | "floor" | "site"
     place_time: float = 0.0
@@ -98,7 +102,7 @@ class WeaponSpec:
 
 def _rifle(name, display, price, **kw):
     base = dict(slot=SLOT_PRIMARY, kind="gun", category="rifle", price=price, auto=True, mag=30, reserve=90,
-                reload_time=2.5, draw_time=0.6, move_mult=0.93, ads_move_mult=0.8, ads_fov=62,
+                reload_time=2.0, draw_time=0.6, move_mult=0.93, ads_move_mult=0.8, ads_fov=62,
                 spread_base=0.17, spread_ads=0.07, spread_move=3.0, spread_air=7.0, spread_per_shot=0.34,
                 spread_max=4.2, spread_recover=9.0, recoil_jitter=0.2, punch_recover=7.5, falloff=0.98,
                 penetration=0.55, wall_damage=12.0)
@@ -108,7 +112,7 @@ def _rifle(name, display, price, **kw):
 
 def _smg(name, display, price, **kw):
     base = dict(slot=SLOT_PRIMARY, kind="gun", category="smg", price=price, kill_reward=600, auto=True,
-                mag=30, reserve=120, reload_time=2.2, draw_time=0.45, move_mult=1.0, ads_move_mult=0.85,
+                mag=30, reserve=120, reload_time=1.8, draw_time=0.45, move_mult=1.0, ads_move_mult=0.85,
                 ads_fov=68, spread_base=0.3, spread_ads=0.16, spread_move=1.2, spread_air=4.5,
                 spread_per_shot=0.26, spread_max=3.6, spread_recover=10.0, recoil=SMG, recoil_jitter=0.25,
                 punch_recover=9.0, head_mult=3.6, falloff=0.93, penetration=0.4, wall_damage=8.0)
@@ -118,27 +122,27 @@ def _smg(name, display, price, **kw):
 
 WEAPONS: dict[str, WeaponSpec] = {
     # ---------------------------------------------------------------- rifles
-    "ak47": _rifle("ak47", "AK-47", 2700, damage=36, interval=0.1, reload_time=2.4,
+    "ak47": _rifle("ak47", "AK-47", 2700, damage=36, interval=0.1, reload_time=1.9,
                    move_mult=0.92, spread_base=0.18, spread_per_shot=0.38, spread_max=4.5, spread_move=3.2,
                    recoil=AK),
-    "m4a4": _rifle("m4a4", "M4A4", 3100, damage=33, interval=0.09, reload_time=2.6, ads_fov=64,
+    "m4a4": _rifle("m4a4", "M4A4", 3100, damage=33, interval=0.09, reload_time=2.1, ads_fov=64,
                    spread_base=0.16, spread_ads=0.06, spread_per_shot=0.3, spread_max=3.9, recoil=M4),
-    "m4a1": _rifle("m4a1", "M4A1", 2900, damage=34, interval=0.1, mag=25, reserve=75, reload_time=2.7,
+    "m4a1": _rifle("m4a1", "M4A1", 2900, damage=34, interval=0.1, mag=25, reserve=75, reload_time=2.2,
                    ads_fov=64, spread_base=0.13, spread_ads=0.05, spread_per_shot=0.28, spread_max=3.6,
                    recoil=M4S, silenced=True),
-    "famas": _rifle("famas", "FAMAS", 2050, damage=30, interval=0.09, mag=25, reserve=90, reload_time=2.9,
+    "famas": _rifle("famas", "FAMAS", 2050, damage=30, interval=0.09, mag=25, reserve=90, reload_time=2.3,
                     move_mult=0.92, ads_fov=66, spread_base=0.2, spread_per_shot=0.36, spread_max=4.4,
                     recoil=FAMAS),
     # ---------------------------------------------------------------- smgs
     "mp5": _smg("mp5", "MP5", 1500, damage=27, interval=0.075),
     "mp9": _smg("mp9", "MP9", 1250, damage=26, interval=0.07, draw_time=0.4, spread_base=0.32),
-    "uzi": _smg("uzi", "UZI", 1200, damage=25, interval=0.065, mag=32, reserve=128, spread_base=0.36,
+    "uzi": _smg("uzi", "UZI", 1050, damage=25, interval=0.065, mag=32, reserve=128, spread_base=0.36,
                 spread_per_shot=0.3, spread_max=4.0, recoil=UZI),
     # ---------------------------------------------------------------- snipers
     "awm": WeaponSpec(
         name="awm", display="AWM", slot=SLOT_PRIMARY, kind="gun", category="sniper", price=4750, kill_reward=100,
         damage=115, interval=1.45, auto=False, mag=5, reserve=20,
-        reload_time=3.4, draw_time=0.9, move_mult=0.85, ads_move_mult=0.5, ads_fov=24,
+        reload_time=2.8, draw_time=0.9, move_mult=0.85, ads_move_mult=0.5, ads_fov=24,
         scope_overlay=True, unscope_after_shot=True,
         spread_base=6.5, spread_ads=0.02, spread_move=7.0, spread_air=14.0,
         spread_per_shot=0.0, spread_max=0.0, spread_recover=10.0,
@@ -148,7 +152,7 @@ WEAPONS: dict[str, WeaponSpec] = {
     "scar20": WeaponSpec(
         name="scar20", display="SCAR-20", slot=SLOT_PRIMARY, kind="gun", category="sniper", price=5000,
         kill_reward=300, damage=80, interval=0.25, auto=False, mag=20, reserve=60,
-        reload_time=3.1, draw_time=0.8, move_mult=0.82, ads_move_mult=0.55, ads_fov=30,
+        reload_time=2.5, draw_time=0.8, move_mult=0.82, ads_move_mult=0.55, ads_fov=30,
         scope_overlay=True, unscope_after_shot=False,
         spread_base=5.0, spread_ads=0.05, spread_move=6.0, spread_air=12.0,
         spread_per_shot=0.35, spread_max=1.6, spread_recover=6.0,
@@ -158,17 +162,35 @@ WEAPONS: dict[str, WeaponSpec] = {
     # ---------------------------------------------------------------- heavy
     "m249": WeaponSpec(
         name="m249", display="M249", slot=SLOT_PRIMARY, kind="gun", category="heavy", price=5200, kill_reward=300,
-        damage=32, interval=0.08, auto=True, mag=100, reserve=200, reload_time=5.7, draw_time=1.0,
+        damage=32, interval=0.08, auto=True, mag=100, reserve=200, reload_time=4.6, draw_time=1.0,
         move_mult=0.78, ads_move_mult=0.75, ads_fov=64,
         spread_base=0.34, spread_ads=0.14, spread_move=4.0, spread_air=8.0, spread_per_shot=0.22,
         spread_max=4.6, spread_recover=6.0, recoil=LMG, recoil_jitter=0.25, punch_recover=6.0,
         head_mult=3.6, falloff=0.97, penetration=0.6, wall_damage=14.0,
     ),
+    "nova": WeaponSpec(
+        name="nova", display="Nova", slot=SLOT_PRIMARY, kind="gun", category="heavy", price=1050, kill_reward=900,
+        damage=24, interval=0.88, auto=False, mag=8, reserve=32, reload_time=2.6, draw_time=0.6,
+        move_mult=0.95, ads_move_mult=0.85, ads_fov=70, pellets=9,
+        spread_base=3.6, spread_ads=2.9, spread_move=0.8, spread_air=2.5, spread_per_shot=0.0,
+        spread_max=0.0, spread_recover=10.0, crouch_mult=0.9,
+        recoil=((3.4, 0.3),), recoil_jitter=0.3, punch_recover=5.0,
+        head_mult=2.0, leg_mult=0.8, falloff=0.55, range=60.0, penetration=0.2, wall_damage=6.0,
+    ),
     # ---------------------------------------------------------------- pistols
+    "glock": WeaponSpec(
+        name="glock", display="Glock", slot=SLOT_PISTOL, kind="gun", category="pistol", price=200,
+        damage=28, interval=0.15, auto=False, mag=20, reserve=120,
+        reload_time=1.7, draw_time=0.35, move_mult=1.0,
+        spread_base=0.45, spread_move=1.4, spread_air=4.5,
+        spread_per_shot=0.55, spread_max=3.2, spread_recover=8.0,
+        recoil=((0.7, 0.12), (0.75, -0.14), (0.8, 0.16)), recoil_jitter=0.25, punch_recover=9.0,
+        head_mult=4.0, leg_mult=0.75, falloff=0.9, penetration=0.3, wall_damage=5.0,
+    ),
     "deagle": WeaponSpec(
         name="deagle", display="Desert Eagle", slot=SLOT_PISTOL, kind="gun", category="pistol", price=700,
         damage=50, interval=0.24, auto=False, mag=7, reserve=35,
-        reload_time=2.0, draw_time=0.4, move_mult=1.0,
+        reload_time=1.6, draw_time=0.4, move_mult=1.0,
         spread_base=0.3, spread_move=1.8, spread_air=5.0,
         spread_per_shot=1.3, spread_max=5.0, spread_recover=6.0,
         recoil=((2.0, 0.25), (2.2, -0.3), (2.4, 0.35)), recoil_jitter=0.3, punch_recover=6.0,
@@ -176,7 +198,7 @@ WEAPONS: dict[str, WeaponSpec] = {
     ),
     "dualies": WeaponSpec(
         name="dualies", display="Dual Berettas", slot=SLOT_PISTOL, kind="gun", category="pistol", price=300,
-        damage=34, interval=0.12, auto=False, mag=30, reserve=120, reload_time=3.6, draw_time=0.6,
+        damage=34, interval=0.12, auto=False, mag=30, reserve=120, reload_time=2.9, draw_time=0.6,
         move_mult=1.0, spread_base=0.42, spread_move=1.5, spread_air=5.0, spread_per_shot=0.5,
         spread_max=3.6, spread_recover=7.0, recoil=((0.9, 0.3), (1.0, -0.35)), recoil_jitter=0.3,
         punch_recover=8.0, head_mult=3.5, falloff=0.93, penetration=0.35, wall_damage=6.0, dual=True,
@@ -192,16 +214,22 @@ WEAPONS: dict[str, WeaponSpec] = {
     "frag": WeaponSpec(
         name="frag", display="HE Grenade", slot=SLOT_FRAG, kind="grenade", category="grenade", price=300,
         damage=115, mag=1, draw_time=0.4, move_mult=1.04,
-        fuse=2.6, throw_speed=17.0, windup=0.22, blast_radius=7.0, wall_damage=120.0,
+        fuse=2.6, throw_speed=25.0, windup=0.22, blast_radius=7.0, wall_damage=120.0,
     ),
     "smoke": WeaponSpec(
         name="smoke", display="Smoke Grenade", slot=SLOT_SMOKE, kind="grenade", category="grenade", price=300,
         mag=1, draw_time=0.4, move_mult=1.04,
-        fuse=1.6, throw_speed=15.0, windup=0.22, smoke_radius=4.6, smoke_duration=16.0,
+        fuse=1.6, throw_speed=22.0, windup=0.22, smoke_radius=4.6, smoke_duration=16.0,
     ),
     "flash": WeaponSpec(
-        name="flash", display="Flashbang", slot=SLOT_FRAG, kind="grenade", category="grenade", price=200,
-        mag=2, draw_time=0.4, move_mult=1.04, fuse=1.5, throw_speed=17.0, windup=0.2, flash_radius=14.0,
+        name="flash", display="Flashbang", slot=SLOT_FLASH, kind="grenade", category="grenade", price=200,
+        mag=1, draw_time=0.4, move_mult=1.04, fuse=1.5, throw_speed=25.0, windup=0.2, flash_radius=14.0,
+        extra={"max_carry": 2},
+    ),
+    "molotov": WeaponSpec(
+        name="molotov", display="Molotov", slot=SLOT_FIRE, kind="grenade", category="grenade", price=400,
+        kill_reward=300, mag=1, draw_time=0.4, move_mult=1.04,
+        fuse=3.2, throw_speed=22.0, windup=0.24, fire_radius=3.0, fire_duration=7.0, fire_dps=42.0,
     ),
     # ---------------------------------------------------------------- objectives
     "c4": WeaponSpec(name="c4", display="C4", slot=SLOT_BOMB, kind="bomb", mag=1, draw_time=0.5, move_mult=1.0,
@@ -237,22 +265,47 @@ WEAPONS: dict[str, WeaponSpec] = {
                             draw_time=0.5, place="ground", place_time=1.0),
 }
 
-PRIMARY_CHOICES = ("ak47", "m4a4", "m4a1", "famas", "mp5", "mp9", "uzi", "awm", "scar20", "m249")
-SECONDARY_CHOICES = ("deagle", "dualies")
-SECONDARY = "deagle"
+ITEM_ZH = {
+    "glock": "格洛克", "deagle": "沙漠之鹰", "dualies": "双持贝瑞塔", "knife": "M9 军刀",
+    "frag": "高爆手雷", "smoke": "烟雾弹", "flash": "闪光弹", "molotov": "燃烧瓶",
+    "defuser": "拆弹器",
+    "breach": "破墙炸药", "barbed": "铁丝网", "dshield": "移动护盾",
+    "thermite": "放热炸药", "ash_round": "破墙弹", "hammer": "破墙锤", "flash_shield": "闪光盾",
+    "castle": "防弹板", "jammer": "信号干扰器", "edd": "入口拒止装置", "armor_bag": "护甲包",
+}
+
+
+def item_name(name: str, zh: bool) -> str:
+    """Display name of a weapon / gadget in the UI language (guns keep their model names)."""
+    if zh and name in ITEM_ZH:
+        return ITEM_ZH[name]
+    return WEAPONS[name].display if name in WEAPONS else name
+
+
+PRIMARY_CHOICES = ("ak47", "m4a4", "m4a1", "famas", "mp5", "mp9", "uzi", "awm", "scar20", "m249", "nova")
+SECONDARY_CHOICES = ("glock", "deagle", "dualies")
+SECONDARY = "glock"
 MELEE = "knife"
 BUY_CATEGORIES = (
-    ("pistol", "手枪", "Pistols", ("deagle", "dualies")),
+    ("pistol", "手枪", "Pistols", ("glock", "deagle", "dualies")),
     ("smg", "冲锋枪", "SMGs", ("mp9", "uzi", "mp5")),
     ("rifle", "步枪", "Rifles", ("famas", "m4a1", "m4a4", "ak47")),
     ("sniper", "狙击", "Snipers", ("awm", "scar20")),
-    ("heavy", "重型", "Heavy", ("m249",)),
-    ("grenade", "投掷物", "Grenades", ("frag", "smoke")),
+    ("heavy", "重型", "Heavy", ("nova", "m249")),
+    ("grenade", "投掷物", "Grenades", ("frag", "flash", "molotov", "smoke")),
 )
+# B-menu presets in free-weapon modes (TDM / domination): key, zh, en, primary, secondary
+LOADOUTS = (
+    ("rifle", "步枪", "Rifleman", "ak47", "glock"),
+    ("sniper", "狙击枪", "Sniper", "awm", "glock"),
+    ("shotgun", "喷子", "Shotgun", "nova", "glock"),
+)
+LOADOUT_BY_KEY = {lo[0]: lo for lo in LOADOUTS}
 SCOPED = tuple(n for n, s in WEAPONS.items() if s.scope_overlay)
 # primary weapon mix for bots in free-weapon modes (TDM / domination)
 BOT_PRIMARY_MIX = (("ak47", 0.22), ("m4a4", 0.14), ("m4a1", 0.12), ("famas", 0.08), ("mp5", 0.08),
-                   ("mp9", 0.06), ("uzi", 0.05), ("awm", 0.15), ("scar20", 0.05), ("m249", 0.05))
+                   ("mp9", 0.06), ("uzi", 0.05), ("awm", 0.15), ("scar20", 0.05), ("m249", 0.05),
+                   ("nova", 0.04))
 
 
 def random_primary(rng) -> str:

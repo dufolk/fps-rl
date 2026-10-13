@@ -37,16 +37,27 @@ def raycast_boxes(origins, dirs, max_t, bmin, bmax):
     return t, idx, normal
 
 
-def segments_blocked(p0, p1, bmin, bmax, eps: float = 1e-3):
+def segments_blocked(p0, p1, bmin, bmax, eps: float = 1e-3, chunk: int = 0):
     """bool[R]: whether segment p0->p1 hits any box before (eps short of) its end point.
 
-    Boxes are culled against each segment's bounding box first, so large maps stay cheap.
+    Boxes are culled against each segment's bounding box first, so large maps stay cheap. With
+    `chunk`, boxes are tested `chunk` at a time and blocked segments drop out early: given the
+    boxes largest first, long sight lines across a detailed map stop at the first buildings.
     """
     p0 = np.asarray(p0, dtype=np.float64).reshape(-1, 3)
     p1 = np.asarray(p1, dtype=np.float64).reshape(-1, 3)
     r = p0.shape[0]
     out = np.zeros(r, dtype=bool)
     if bmin.shape[0] == 0 or r == 0:
+        return out
+    if chunk and bmin.shape[0] > chunk:
+        live = np.arange(r)
+        for s in range(0, bmin.shape[0], chunk):
+            hit = segments_blocked(p0[live], p1[live], bmin[s:s + chunk], bmax[s:s + chunk], eps)
+            out[live[hit]] = True
+            live = live[~hit]
+            if not len(live):
+                break
         return out
     lo = np.minimum(p0, p1)
     hi = np.maximum(p0, p1)

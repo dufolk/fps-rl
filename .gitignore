@@ -1,6 +1,11 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-fpsrl/assets/
+fpsrl/assets/*
+!fpsrl/assets/gunshots/
+!fpsrl/assets/gunshots/**
 shots/
 runs/
+domin/
+build/
+de_dust2-cs-map.zip

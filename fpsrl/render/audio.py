@@ -9,8 +9,16 @@ import numpy as np
 from panda3d.core import Filename
 
 SR = 44100
-SYNTH_VERSION = "6"
+SYNTH_VERSION = "8"
 CUSTOM_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "custom_sfx")
+REAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "gunshots")
+REAL_GUNSHOTS = {
+    "glock": "pistol_real.wav", "deagle": "pistol_real.wav", "dualies": "pistol_real.wav",
+    "ak47": "rifle_real.wav", "m4a4": "rifle_real.wav", "famas": "rifle_real.wav",
+    "mp5": "pistol_real.wav", "mp9": "pistol_real.wav", "uzi": "pistol_real.wav",
+    "awm": "sniper_real.wav", "scar20": "sniper_real.wav", "m249": "rifle_real.wav",
+    "nova": "shotgun_real.wav",
+}
 
 
 def _lowpass(x, fc):
@@ -202,6 +210,7 @@ def build_library() -> dict[str, np.ndarray]:
         "ak47": gunshot(0.75, 6000, 1400, 85, 0.22, 2.6, 1),
         "awm": gunshot(1.4, 7000, 1000, 60, 0.45, 3.2, 2, crack_decay=0.014, body_decay=0.09),
         "deagle": gunshot(0.6, 5000, 1700, 110, 0.18, 2.4, 3),
+        "glock": gunshot(0.4, 6200, 2200, 150, 0.08, 1.7, 55, crack_decay=0.006, body_decay=0.025),
         "dry": click(2600, 0.06, 4),
         "mag_out": compose(0.3, [(0.0, click(1800, 0.08, 5, 0.01), 1.0), (0.05, thud(220, 0.12, 6), 0.4)]),
         "mag_in": compose(0.3, [(0.0, click(1500, 0.08, 7, 0.012), 1.0), (0.04, click(3000, 0.06, 8), 0.8)]),
@@ -240,6 +249,8 @@ def build_library() -> dict[str, np.ndarray]:
         "dualies": gunshot(0.45, 5800, 2000, 140, 0.1, 1.9, 37, body_decay=0.03),
         "scar20": gunshot(1.0, 7000, 1200, 70, 0.32, 2.9, 38, crack_decay=0.012, body_decay=0.07),
         "m249": gunshot(0.8, 5500, 1200, 75, 0.25, 2.8, 39),
+        "nova": gunshot(1.1, 4500, 900, 55, 0.38, 3.4, 52, crack_decay=0.016, body_decay=0.1),
+        "pump": compose(0.45, [(0.0, click(900, 0.12, 53, 0.02, 0.8), 0.9), (0.2, click(1600, 0.1, 54, 0.015), 1.0)]),
         # objectives / gadgets
         "beep": tone((2600,), 0.09, 0.03),
         "plant_done": compose(0.5, [(0.0, tone((1800, 2700), 0.2, 0.06), 1.0), (0.18, click(2200, 0.1, 40), 0.6)]),
@@ -262,6 +273,23 @@ def build_library() -> dict[str, np.ndarray]:
     for k in range(1, 7):
         lib[f"kill_{k}"] = kill_sting(k, 70 + k)
     return lib
+
+
+def ear_offset(delta, forward, right, up, radius=5.0, min_dist=0.35):
+    """Listener-relative position for a world offset.
+
+    OpenAL ignores `setBalance`, so sounds are placed on a fixed-radius sphere around the
+    listener: +X is the right ear, +Y is in front, -Y is behind. Loudness stays separate.
+    """
+    dx, dy, dz = float(delta[0]), float(delta[1]), float(delta[2])
+    d = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if d <= min_dist:
+        return 0.0, 0.01, 0.0
+    k = radius / d
+    x = (dx * right[0] + dy * right[1] + dz * right[2]) * k
+    y = (dx * forward[0] + dy * forward[1] + dz * forward[2]) * k
+    z = (dx * up[0] + dy * up[1] + dz * up[2]) * k
+    return x, y, z
 
 
 def _write_wav(path, x):
@@ -287,6 +315,11 @@ def ensure_sounds(cache_dir: str) -> dict[str, str]:
     for fn in os.listdir(cache_dir):
         if fn.endswith(".wav"):
             paths[fn[:-4]] = os.path.join(cache_dir, fn)
+    # Bundled CC0 field recordings override the synthesised fallbacks.
+    for name, fn in REAL_GUNSHOTS.items():
+        p = os.path.join(REAL_DIR, fn)
+        if os.path.isfile(p):
+            paths[name] = p
     if os.path.isdir(CUSTOM_DIR):  # user-provided overrides, e.g. custom_sfx/kill_2.wav
         for fn in os.listdir(CUSTOM_DIR):
             name, ext = os.path.splitext(fn)
@@ -295,8 +328,8 @@ def ensure_sounds(cache_dir: str) -> dict[str, str]:
     return paths
 
 
-POOL = {"ak47": 8, "awm": 4, "deagle": 6, "m4a4": 8, "m4a1": 8, "famas": 8, "mp5": 8, "mp9": 8, "uzi": 8,
-        "dualies": 6, "scar20": 6, "m249": 10, "step0": 3, "step1": 3, "step2": 3, "step3": 3, "hit": 4,
+POOL = {"ak47": 8, "awm": 4, "deagle": 6, "glock": 8, "m4a4": 8, "m4a1": 8, "famas": 8, "mp5": 8, "mp9": 8, "uzi": 8,
+        "dualies": 6, "scar20": 6, "m249": 10, "nova": 4, "step0": 3, "step1": 3, "step2": 3, "step3": 3, "hit": 4,
         "impact_metal": 4, "flesh": 4, "bounce": 3, "explosion": 3}
 
 
@@ -308,6 +341,7 @@ class Audio:
         self.enabled = base.sfxManagerList and base.sfxManagerList[0] is not None
         self.pools: dict[str, list] = {}
         self.idx: dict[str, int] = {}
+        self._spatial = False
         if not self.enabled:
             return
         try:
@@ -328,20 +362,27 @@ class Audio:
         self.play(name, volume=volume)
         self.muted = muted
 
+    def _listener_space(self):
+        """OpenAL drops setBalance. Keep the listener at the origin, looking down +Y, and move
+        each source in that space so left/right/behind come from the camera axes."""
+        if self._spatial:
+            return
+        mgr = self.base.sfxManagerList[0]
+        mgr.audio3dSetListenerAttributes(0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1)
+        mgr.audio3dSetDropOffFactor(0.0)
+        self._spatial = True
+
     def play(self, name, pos=None, listener=None, volume=1.0, rate=1.0, ref_dist=6.0):
         if not self.enabled or self.muted or name not in self.pools:
             return
         vol = volume * self.master
-        bal = 0.0
+        ear = (0.0, 0.01, 0.0)
         if pos is not None and listener is not None:
-            lpos, lyaw = listener
-            dx, dy, dz = pos[0] - lpos[0], pos[1] - lpos[1], pos[2] - lpos[2]
-            d = math.sqrt(dx * dx + dy * dy + dz * dz)
+            lpos, forward, right, up = listener
+            delta = (pos[0] - lpos[0], pos[1] - lpos[1], pos[2] - lpos[2])
+            d = math.sqrt(delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2)
             vol *= 1.0 / (1.0 + (d / ref_dist) ** 1.4)
-            if d > 0.5:
-                yr = math.radians(lyaw)
-                right = dx * math.sin(yr) - dy * math.cos(yr)
-                bal = max(-1.0, min(1.0, right / max(d, 1e-3))) * 0.8
+            ear = ear_offset(delta, forward, right, up)
         if vol < 0.01:
             return
         pool = self.pools[name]
@@ -349,7 +390,9 @@ class Audio:
         self.idx[name] = (i + 1) % len(pool)
         s = pool[i]
         s.stop()
+        self._listener_space()
+        s.set3dAttributes(ear[0], ear[1], ear[2], 0.0, 0.0, 0.0)
+        s.set3dMinDistance(1.0)
         s.setVolume(min(1.0, vol))
-        s.setBalance(bal)
         s.setPlayRate(rate)
         s.play()

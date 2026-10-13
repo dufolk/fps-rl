@@ -40,9 +40,9 @@ class RewardConfig:
     # objective modes
     round_win: float = 1.0
     round_lose: float = -1.0
-    capture: float = 0.5        # own team captures a point (x0.3 when the agent was not on it)
-    point_lost: float = -0.25   # enemy captures a point
-    hold: float = 0.0           # per second for every point the team owns
+    capture: float = 0.5        # own team wins a point (x0.3 when the agent was not on it)
+    point_lost: float = -0.25   # enemy wins a point
+    hold: float = 0.0           # per second while the team alone stands in the open point
     plant: float = 0.8
     defuse: float = 0.8
     in_objective: float = 0.0   # per second inside the zone the agent should be in (shaping)
@@ -51,7 +51,7 @@ class RewardConfig:
 @dataclass
 class EnvConfig:
     map_name: str = "transport_ship"
-    mode: str = "tdm"  # tdm | dom | bomb | r6 (must be listed in the map's modes)
+    mode: str = "tdm"  # tdm | dom | bomb | elim | r6 (must be listed in the map's modes)
     mode_params: dict = field(default_factory=dict)
     learner_auto_buy: bool = True  # bomb mode: controlled agents buy like bots during freeze time
     team_size: int = 4
@@ -145,7 +145,7 @@ class _FPSBase:
         self.controlled = list(controlled)
         # bots that only shop for the learners (bomb mode economy)
         self._buyers = [Bot(self.world, aid, cfg.bot_difficulty, seed=aid) for aid in self.controlled] \
-            if cfg.learner_auto_buy and cfg.mode == "bomb" else []
+            if cfg.learner_auto_buy and getattr(self.world.mode, "economy", False) else []
         self.bots = [Bot(self.world, a.id, cfg.bot_difficulty, seed=(cfg.seed or 0) * 101 + a.id)
                      for a in self.world.agents if a.id not in self.controlled]
         if not cfg.teammate_bots:
@@ -232,7 +232,7 @@ class _FPSBase:
                     on = me.alive and self.world.mode.in_zone(me.pos, self.world.mode.points[e["point"]])
                     total += r.capture * (1.0 if on else 0.3)
                     stats["captures"] = stats.get("captures", 0) + int(on)
-                else:
+                elif e["team"] >= 0:
                     total += r.point_lost
             elif t == "bomb_planted" and e["agent"] == aid:
                 total += r.plant
@@ -241,8 +241,9 @@ class _FPSBase:
                 total += r.defuse
                 stats["defuses"] = stats.get("defuses", 0) + 1
         dt = self._last_dt
-        if r.hold and self.world.mode.name == "dom":
-            total += r.hold * dt * sum(1 for o in self.world.mode.owner if o == me.team)
+        m = self.world.mode
+        if r.hold and m.name == "dom" and m.active >= 0 and m.present[me.team] and not m.present[1 - me.team]:
+            total += r.hold * dt
         if r.in_objective and me.alive and self._in_objective(me):
             total += r.in_objective * dt
         return float(total), stats
@@ -250,7 +251,7 @@ class _FPSBase:
     def _in_objective(self, a) -> bool:
         m = self.world.mode
         if m.name == "dom":
-            return any(m.in_zone(a.pos, z) for z in m.points)
+            return m.active >= 0 and m.in_zone(a.pos, m.points[m.active])
         if hasattr(m, "site_at"):
             b = m.bomb
             if m.side(a.team) == 1 and b is not None and b["state"] == "planted":
@@ -290,6 +291,8 @@ class _FPSBase:
             seed = int(self.world.rng.integers(1 << 31))
         self.world.reset(seed)
         for b in self.bots:
+            b.reset(seed * 101 + b.aid)
+        for b in self._buyers:
             b.reset(seed * 101 + b.aid)
         self._steps = 0
         self._last_dt = 0.0

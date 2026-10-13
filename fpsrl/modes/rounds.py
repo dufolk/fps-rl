@@ -8,7 +8,7 @@ import math
 import numpy as np
 
 from ..geometry import poly_center
-from ..weapons import SLOT_BOMB, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS
+from ..weapons import SECONDARY, SLOT_BOMB, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS
 from .base import GameMode
 
 ATT, DEF = 0, 1  # sides
@@ -124,7 +124,7 @@ class RoundMode(GameMode):
 
     def post_step(self, dt: float):
         w = self.w
-        if self.phase == "over" or w.done:
+        if self.phase in ("over", "freeze", "prep") or w.done:
             return
         att_alive = [a for a in self.members(self.team_of_side(ATT)) if a.alive]
         def_alive = [a for a in self.members(self.team_of_side(DEF)) if a.alive]
@@ -137,7 +137,10 @@ class RoundMode(GameMode):
         elif not att_alive and not planted:
             self.end_round(DEF, "elimination")
         elif self.phase == "live" and w.time >= self.phase_end:
-            self.end_round(DEF, "time")
+            self.on_timeout()
+
+    def on_timeout(self):
+        self.end_round(DEF, "time")
 
     def detonate(self):
         w = self.w
@@ -158,8 +161,9 @@ class RoundMode(GameMode):
 
     def end_round(self, side: int, reason: str):
         w = self.w
-        team = self.team_of_side(side)
-        self.wins[team] += 1
+        team = self.team_of_side(side) if side in (ATT, DEF) else -1
+        if team >= 0:
+            self.wins[team] += 1
         self.phase = "over"
         self.phase_end = w.time + self.p["post_time"]
         self.last_result = {"team": team, "side": side, "reason": reason}
@@ -167,7 +171,7 @@ class RoundMode(GameMode):
             a.busy = None
         w._emit("round_end", team=team, side=side, reason=reason, wins=list(self.wins), round=self.round_no)
         self.on_round_end(team, side, reason)
-        if self.wins[team] >= self.win_target:
+        if team >= 0 and self.wins[team] >= self.win_target:
             w.done = True
             w.winner = team
 
@@ -326,31 +330,50 @@ class RoundMode(GameMode):
 
 class BombDefusal(RoundMode):
     name = "bomb"
-    DEFAULTS = {**RoundMode.DEFAULTS, "start_money": 800, "max_money": 16000, "win_reward": 3250,
+    economy = True  # buy menu + money (Elimination reuses this)
+    SPECIAL_ITEMS = {"kevlar", "kevlar_helmet", "defuser"}
+    DEFAULTS = {**RoundMode.DEFAULTS, "freeze_time": 15.0, "post_time": 7.0,
+                "win_rounds": 16, "half_rounds": 15, "max_rounds": 30,
+                "start_money": 800, "max_money": 16000, "win_reward": 3250,
                 "loss_base": 1400, "loss_step": 500, "loss_max": 3400, "plant_reward": 800,
-                "defuse_reward": 300, "buy_time": 20.0, "team_kill_penalty": 300}
+                "objective_win_reward": 3500, "defuse_reward": 300, "buy_time": 20.0,
+                "team_kill_penalty": 300}
+    GEAR_PRICES = {"kevlar": 650, "kevlar_helmet": 1000, "defuser": 400}
+    # Existing weapons stand in for the closest CS:GO side-specific equivalents.
+    SIDE_WEAPONS = {
+        ATT: {"glock", "deagle", "dualies", "mp5", "uzi", "ak47", "awm", "scar20", "m249", "nova"},
+        DEF: {"glock", "deagle", "dualies", "mp5", "mp9", "m4a4", "m4a1", "famas",
+              "awm", "scar20", "m249", "nova"},
+    }
 
     def on_match_start(self):
-        self.loss_streak = [0, 0]
+        # Since the 2019 economy update, each half starts at loss-count 1:
+        # the pistol-round loser receives $1900.
+        self.loss_streak = [1, 1]
         for a in self.w.agents:
             a.money = self.p["start_money"]
 
     def on_swap(self):
-        self.loss_streak = [0, 0]
+        self.loss_streak = [1, 1]
         for a in self.w.agents:
             a.money = self.p["start_money"]
             a.inv = {}
 
     def give_loadout(self, a):
         from ..sim import WeaponState
-        pistol = "dualies"
+        pistol = SECONDARY
         a.inv = {SLOT_PISTOL: WeaponState(pistol), SLOT_MELEE: WeaponState("knife")}
         a.loadout = {"primary": None, "secondary": pistol}
+
+    def after_spawn(self, fresh: bool):
+        super().after_spawn(fresh)
+        # CS:GO's buy window starts at round start, so freeze time consumes part of it.
+        self.buy_end = self.w.time + self.p["buy_time"]
 
     def can_buy_now(self, a) -> bool:
         if not a.alive or self.phase not in ("freeze", "live"):
             return False
-        if self.phase == "live" and self.w.time > self.phase_end - self.p["round_time"] + self.p["buy_time"]:
+        if self.w.time > self.buy_end:
             return False
         zones = self.w.map.buy_zones.get(self.side(a.team))
         if zones:
@@ -363,15 +386,52 @@ class BombDefusal(RoundMode):
             return None
         spec = WEAPONS[name]
         if name == "defuser":
-            if self.side(a.team) != DEF or SLOT_BOMB in a.inv:
-                return None
-            return 400
-        if spec.price <= 0 or spec.kind not in ("gun", "grenade"):
+            return None
+        if spec.kind not in ("gun", "grenade") or spec.price < 0:
+            return None
+        if spec.kind == "gun" and name not in self.SIDE_WEAPONS[self.side(a.team)]:
             return None
         cur = a.inv.get(spec.slot)
-        if cur is not None and cur.name == name:
+        if spec.kind == "grenade":
+            total = sum(ws.mag for ws in a.inv.values() if ws.spec.kind == "grenade")
+            max_carry = int(spec.extra.get("max_carry", 1))
+            if total >= 4 or (cur is not None and (cur.name != name or cur.mag >= max_carry)):
+                return None
+        elif cur is not None and cur.name == name:
             return None
+        if name == "molotov" and self.side(a.team) == DEF:
+            return 600  # incendiary grenade price
         return spec.price
+
+    def buy_special(self, a, name: str) -> bool:
+        price = self.gear_price(a, name)
+        if price is None or a.money < price:
+            return False
+        if name == "defuser":
+            a.money -= price
+            self.w.give(a, "defuser")
+        elif name == "kevlar":
+            a.money -= price
+            a.armor = 0.2
+        elif name == "kevlar_helmet":
+            a.money -= price
+            a.armor = 0.2
+            a.helmet = True
+        else:
+            return False
+        self.w._emit("buy", agent=a.id, weapon=name, price=price)
+        return True
+
+    def gear_price(self, a, name: str):
+        if not self.can_buy_now(a):
+            return None
+        if name == "defuser":
+            return 400 if self.side(a.team) == DEF and SLOT_BOMB not in a.inv else None
+        if name == "kevlar":
+            return 650 if a.armor <= 0 else None
+        if name == "kevlar_helmet":
+            return None if a.helmet else (350 if a.armor > 0 else 1000)
+        return None
 
     def defuse_time(self, a) -> float:
         w = a.inv.get(SLOT_BOMB)
@@ -381,9 +441,9 @@ class BombDefusal(RoundMode):
         super().on_kill(victim, attacker, weapon, headshot)
         if victim.inv.get(SLOT_BOMB) is not None and victim.inv[SLOT_BOMB].name == "defuser":
             victim.inv.pop(SLOT_BOMB, None)
-        if attacker is None or attacker.id == victim.id:
+        if attacker is None:
             return
-        if attacker.team == victim.team:
+        if attacker.id == victim.id or attacker.team == victim.team:
             self._pay(attacker, -self.p["team_kill_penalty"])
         else:
             reward = WEAPONS[weapon].kill_reward if weapon in WEAPONS else 300
@@ -397,28 +457,70 @@ class BombDefusal(RoundMode):
 
     def on_round_end(self, team, side, reason):
         loser = 1 - team
-        self.loss_streak[team] = 0
+        self.loss_streak[team] = max(0, self.loss_streak[team] - 1)
         bonus = self.p["loss_base"] + self.p["loss_step"] * self.loss_streak[loser]
         bonus = min(bonus, self.p["loss_max"])
         self.loss_streak[loser] = min(self.loss_streak[loser] + 1, 4)
         planted = self.bomb is not None and self.bomb["state"] in ("planted", "defused")
+        win_reward = self.p["objective_win_reward"] if reason in ("bomb", "defuse") else self.p["win_reward"]
         for a in self.w.agents:
             if a.team == team:
-                self._pay(a, self.p["win_reward"])
+                self._pay(a, win_reward)
             else:
                 if reason == "time" and a.alive and self.side(a.team) == ATT:
                     continue  # attackers who survive a lost round on time get nothing
-                self._pay(a, bonus + (self.p["plant_reward"] if planted and self.side(a.team) == ATT else 0))
+                plant_bonus = self.p["plant_reward"] if planted and self.side(a.team) == ATT else 0
+                self._pay(a, bonus + plant_bonus)
         # the round winner keeps playing, dead players lose their guns
         for a in self.w.agents:
             if not a.alive:
                 a.inv = {}
+        if self.round_no >= self.p["max_rounds"] and self.wins[0] == self.wins[1]:
+            self.w.done = True
+            self.w.winner = -1
 
     def _pay(self, a, amount):
         a.money = int(np.clip(a.money + amount, 0, self.p["max_money"]))
 
     def state(self) -> dict:
         st = super().state()
-        st["buy_left"] = round(max(0.0, self.phase_end - self.p["round_time"] + self.p["buy_time"] - self.w.time), 2) \
-            if self.phase == "live" else (round(self.time_left() + self.p["buy_time"], 2) if self.phase == "freeze" else 0.0)
+        st["buy_left"] = round(max(0.0, self.buy_end - self.w.time), 2) \
+            if self.phase in ("freeze", "live") else 0.0
         return st
+
+
+class Elimination(BombDefusal):
+    """Team elimination on the bomb maps: the same rounds and economy, with no bomb to plant.
+    Wipe the other team; on the clock, the side with more players left wins, and a tie is a draw."""
+
+    name = "elim"
+    bomb_item = ""
+
+    def buy_price(self, a, name: str):
+        if name == "defuser":
+            return None
+        return super().buy_price(a, name)
+
+    def buy_special(self, a, name: str) -> bool:
+        if name == "defuser":
+            return False
+        return super().buy_special(a, name)
+
+    def on_timeout(self):
+        att = [a for a in self.members(self.team_of_side(ATT)) if a.alive]
+        dfn = [a for a in self.members(self.team_of_side(DEF)) if a.alive]
+        if len(att) > len(dfn):
+            self.end_round(ATT, "time")
+        elif len(dfn) > len(att):
+            self.end_round(DEF, "time")
+        else:
+            self.end_round(-1, "draw")
+
+    def on_round_end(self, team, side, reason):
+        if team >= 0:
+            super().on_round_end(team, side, reason)
+            return
+        for a in self.w.agents:
+            self._pay(a, self.p["loss_base"])
+            if not a.alive:
+                a.inv = {}

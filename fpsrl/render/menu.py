@@ -11,7 +11,7 @@ from direct.gui.OnscreenImage import OnscreenImage
 from panda3d.core import (AmbientLight, Camera, DirectionalLight, NodePath, PerspectiveLens, TextNode,
                           TransparencyAttrib, Vec4, WindowProperties)
 
-from ..maps import MAPS, MODES, default_mode
+from ..maps import MAPS, MODES, default_mode, resolve_map_mode
 from ..profile import SENSITIVITY_MAX, SENSITIVITY_MIN, SENSITIVITY_STEP, clamp_sensitivity
 from ..weapons import PRIMARY_CHOICES, WEAPONS
 from .hud import load_font
@@ -29,9 +29,9 @@ DIM = (0.7, 0.72, 0.76, 1)
 
 DIFFICULTIES = [("easy", "简单", "Easy"), ("normal", "普通", "Normal"), ("hard", "困难", "Hard"),
                 ("insane", "地狱", "Insane")]
-SPAN = {"ak47": 1.1, "awm": 1.5, "deagle": 0.3, "knife": 0.36, "frag": 0.14, "smoke": 0.14, "m4a4": 1.05,
+SPAN = {"ak47": 1.1, "awm": 1.5, "deagle": 0.3, "glock": 0.26, "knife": 0.36, "frag": 0.14, "smoke": 0.14, "m4a4": 1.05,
         "m4a1": 1.1, "famas": 0.95, "mp5": 0.75, "mp9": 0.6, "uzi": 0.58, "dualies": 0.24, "scar20": 1.25,
-        "m249": 1.15}
+        "m249": 1.15, "nova": 1.1}
 
 
 def _gradient_tex():
@@ -160,6 +160,12 @@ class Cycle:
     def _refresh(self):
         self.text["text"] = str(self.options[self.i][1])
 
+    def set(self, value):
+        vals = [o[0] for o in self.options]
+        if value in vals:
+            self.i = vals.index(value)
+            self._refresh()
+
     @property
     def value(self):
         return self.options[self.i][0]
@@ -257,13 +263,14 @@ class MainMenu:
         ui.label(self.top, L("运输船 · 沙漠灰 · 占点小镇 · 银行", "Transport Ship · Desert 2 · HP Town · Bank"),
                  (0.13, -0.27), 0.042, DIM)
         self.nav = {}
-        items = [("single", L("单人训练", "Single Player")), ("host", L("创建房间", "Host LAN Room")),
-                 ("join", L("加入房间", "Join LAN Room")), ("armory", L("武器仓库", "Armory")),
-                 ("settings", L("设置", "Settings")), ("quit", L("退出游戏", "Quit"))]
+        items = [("single", L("单人训练", "Single Player")), ("watch", L("观战", "Spectate")),
+                 ("host", L("创建房间", "Host LAN Room")), ("join", L("加入房间", "Join LAN Room")),
+                 ("armory", L("武器仓库", "Armory")), ("settings", L("设置", "Settings")),
+                 ("quit", L("退出游戏", "Quit"))]
         for i, (key, text) in enumerate(items):
             self.nav[key] = ui.button(self.left, text, (0.42, 0.36 - i * 0.12), self.open, (0.3, 0.048), 0.048,
                                       [key])
-        self.status = ui.label(self.left, "", (0.12, -0.5), 0.036, (1, 0.6, 0.45, 1))
+        self.status = ui.label(self.left, "", (0.12, -0.58), 0.036, (1, 0.6, 0.45, 1))
         self.panel = DirectFrame(parent=self.root, frameColor=PANEL, frameSize=(-1.15, 1.15, -0.8, 0.72),
                                  pos=(0.32, 0, -0.02))
         self.page = None
@@ -319,31 +326,36 @@ class MainMenu:
         DirectFrame(parent=page, frameColor=ACCENT, frameSize=(-1.05, -0.85, 0.535, 0.545))
 
     # ------------------------------------------------------------------ pages
-    def _match_options(self, page, cfg, z0, team=True, step=0.1):
+    def _match_options(self, page, cfg, z0, team=True, step=0.1, primary=True):
         ui, L = self.ui, self.ui.L
         rows = {}
         z = z0
-        mode_row = {}
-
-        def mode_options(map_name):
-            return [(m, L(*MODES[m])) for m in MAPS[map_name][2]]
+        link = {"busy": False}
+        modes = [(m, L(*text)) for m, text in MODES.items()]
 
         def on_map(map_name):
-            # rebuild the mode choices for the new map, keeping the mode when the map supports it
-            r = mode_row["row"]
-            cur = r.value
-            r.options = mode_options(map_name)
-            vals = [o[0] for o in r.options]
-            r.i = vals.index(cur) if cur in vals else 0
-            r._refresh()
+            # the mode list always shows every mode; a map that cannot host the current one drops to its default
+            if link["busy"]:
+                return
+            link["busy"] = True
+            if rows["mode"].value not in MAPS[map_name][2]:
+                rows["mode"].set(default_mode(map_name))
+            link["busy"] = False
 
-        map_name = cfg.get("map", "transport_ship")
-        map_name = map_name if map_name in MAPS else "transport_ship"
+        def on_mode(mode):
+            # 彩六 only exists on the bank, 爆破 / 歼灭 on desert2: follow the mode instead of hiding it
+            if link["busy"]:
+                return
+            link["busy"] = True
+            if mode not in MAPS[rows["map"].value][2]:
+                rows["map"].set(resolve_map_mode(rows["map"].value, mode)[0])
+            link["busy"] = False
+
+        map_name, mode = resolve_map_mode(cfg.get("map", "transport_ship"), cfg.get("mode"))
         rows["map"] = Cycle(ui, page, L("地图", "Map"), [(k, L(v[0], v[1])) for k, v in MAPS.items()], map_name, z,
                             on_map)
         z -= step
-        rows["mode"] = mode_row["row"] = Cycle(ui, page, L("模式", "Mode"), mode_options(map_name),
-                                               cfg.get("mode", default_mode(map_name)), z)
+        rows["mode"] = Cycle(ui, page, L("模式", "Mode"), modes, mode, z, on_mode)
         z -= step
         rows["team_size"] = Cycle(ui, page, L("每队人数", "Team size"), [(n, f"{n} v {n}") for n in range(1, 7)],
                                   cfg.get("team_size", 4), z)
@@ -354,9 +366,10 @@ class MainMenu:
         if team:
             rows["team"] = Cycle(ui, page, L("阵营", "Team"), [(0, "BL"), (1, "GR")], cfg.get("team", 0), z)
             z -= step
-        rows["primary"] = Cycle(ui, page, L("主武器 (团竞/占点)", "Primary (TDM / Dom)"),
-                                [(n, WEAPONS[n].display) for n in PRIMARY_CHOICES], self.app.profile.primary, z)
-        z -= step
+        if primary:
+            rows["primary"] = Cycle(ui, page, L("主武器 (团竞/占点)", "Primary (TDM / Dom)"),
+                                    [(n, WEAPONS[n].display) for n in PRIMARY_CHOICES], self.app.profile.primary, z)
+            z -= step
         rows["kill_limit"] = Cycle(ui, page, L("击杀目标 (团竞)", "Kill limit (TDM)"),
                                    [(n, str(n)) for n in (20, 40, 60, 100, 150)], cfg.get("kill_limit", 60), z)
         z -= step
@@ -378,6 +391,21 @@ class MainMenu:
             self.app.profile.single.update(cfg)
             self.app.start_single()
         ui.button(page, L("开始游戏", "START"), (0.75, -0.66), start, (0.3, 0.07), 0.058, color=ACCENT,
+                  hover=(1, 0.7, 0.3, 1))
+
+    def _page_watch(self, page):
+        ui, L = self.ui, self.ui.L
+        self._title(page, L("观战", "Spectate"))
+        ui.label(page, L("看机器人对打。每个模式都能进。默认上帝视角：WASD、鼠标、Q 上升、E 下降，F 切第一人称。",
+                         "Watch bots in any mode. God view: WASD, mouse, Q up, E down. F enters first person."),
+                 (-1.05, 0.44), 0.032, DIM)
+        rows, _z = self._match_options(page, self.app.profile.watch, 0.3, team=False, primary=False)
+
+        def start():
+            cfg = {k: r.value for k, r in rows.items()}
+            self.app.profile.watch.update(cfg)
+            self.app.start_watch()
+        ui.button(page, L("开始观战", "WATCH"), (0.75, -0.66), start, (0.3, 0.07), 0.058, color=ACCENT,
                   hover=(1, 0.7, 0.3, 1))
 
     def _page_host(self, page):
@@ -550,15 +578,16 @@ class MainMenu:
             def set_(v):
                 setattr(prof, attr, v)
                 prof.save()
-                if attr == "fullscreen":
-                    self.app.apply_fullscreen()
+                if attr == "borderless":
+                    self.app.apply_borderless()
             return set_
         Cycle(ui, page, L("开镜方式", "Aim mode"), [(False, L("按住", "Hold")), (True, L("切换", "Toggle"))],
               prof.ads_toggle, 0.03, flag("ads_toggle"))
         Cycle(ui, page, L("显示帧率", "Show FPS"), [(False, L("关", "Off")), (True, L("开", "On"))],
               prof.show_fps, -0.09, flag("show_fps"))
-        Cycle(ui, page, L("全屏", "Fullscreen"), [(False, L("关", "Off")), (True, L("开", "On"))],
-              prof.fullscreen, -0.21, flag("fullscreen"))
+        Cycle(ui, page, L("无边框全屏", "Borderless fullscreen"),
+              [(False, L("关", "Off")), (True, L("开", "On"))],
+              prof.borderless, -0.21, flag("borderless"))
         ui.label(page, L("设置自动保存到 ~/.fpsrl/profile.json", "Settings are saved to ~/.fpsrl/profile.json"),
                  (-1.0, -0.66), 0.032, DIM)
         self._settings_save = lambda: (set_name(), prof.save())
@@ -593,7 +622,7 @@ class PauseMenu:
         self.root.setBin("gui-popup", 50)
         DirectFrame(parent=self.root, frameColor=(0, 0, 0, 0.55), frameSize=(-4, 4, -1, 1))
         DirectFrame(parent=self.root, frameColor=PANEL, frameSize=(-0.68, 0.68, -0.52, 0.5))
-        ui.label(self.root, L("暂停", "PAUSED"), (0, 0.36), 0.075, ACCENT, TextNode.ACenter)
+        self.title_lbl = ui.label(self.root, L("暂停", "PAUSED"), (0, 0.36), 0.075, ACCENT, TextNode.ACenter)
         self.room_lbl = ui.label(self.root, "", (0, 0.29), 0.034, DIM, TextNode.ACenter)
         ui.button(self.root, L("继续游戏", "Resume"), (0, 0.17), app.toggle_pause, (0.4, 0.055), 0.048)
         prof = app.profile
@@ -617,11 +646,13 @@ class PauseMenu:
         self.vol_lbl["text"] = f"{int(v * 100)}%"
         self.app.apply_volume()
 
-    def show(self, room_text=""):
+    def show(self, room_text="", live=False):
         prof = self.app.profile
         self.sens.set(prof.sensitivity, notify=False)
         self.vol["value"] = prof.volume
         self._on_vol(prof.volume)
+        # a LAN match keeps simulating; this screen only releases the local mouse
+        self.title_lbl["text"] = self.ui.L("菜单", "MENU") if live else self.ui.L("暂停", "PAUSED")
         self.room_lbl["text"] = room_text
         self.visible = True
         self.root.show()
@@ -631,15 +662,18 @@ class PauseMenu:
         self.root.hide()
 
 
-def set_fullscreen(base, on: bool, windowed_size=(1600, 900)):
+def set_borderless(base, on: bool, windowed_size=(1600, 900)):
+    """Toggle desktop-sized borderless windowing. Exclusive fullscreen is never used."""
     props = WindowProperties()
+    props.setFullscreen(False)
+    props.setUndecorated(on)
     if on:
         di = base.pipe.getDisplayInformation()
         w, h = di.getDisplayModeWidth(0), di.getDisplayModeHeight(0)
         if w <= 0:
             w, h = 1920, 1080
         props.setSize(w, h)
+        props.setOrigin(0, 0)
     else:
         props.setSize(*windowed_size)
-    props.setFullscreen(on)
     base.win.requestProperties(props)

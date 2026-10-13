@@ -7,7 +7,7 @@ import math
 from panda3d.core import NodePath, TextureStage, TransparencyAttrib
 
 from . import models as M
-from .hud import TEAM_COLORS
+from .hud import DOM_COLORS
 from .meshes import MeshBuilder
 from .world_scene import SHADOW_MASK, SURFACE_FOR, UV_SCALE
 
@@ -180,20 +180,27 @@ class GadgetView:
 
 
 def point_colors(world):
-    """Colour scale per domination point (owner tint, blinking while contested)."""
+    """Colour scale per domination point: the open one glows in the colour of the team scoring on
+    it (yellow blink while contested), decided ones take the winner's colour, waiting ones are dim."""
     m = world.mode
     if getattr(m, "name", "") != "dom":
         return []
     out = []
-    for owner, prog in zip(m.owner, m.progress):
-        if owner in (0, 1):
-            c = TEAM_COLORS[owner]
-            col = (c[0] * 1.3, c[1] * 1.3, c[2] * 1.3, 1)
+    for i in range(len(m.points)):
+        if i == m.active:
+            n0, n1 = m.present
+            if n0 and n1:
+                blink = 0.5 + 0.5 * math.sin(world.time * 10)
+                col = (1.3, 1.1 + 0.2 * blink, 0.3, 1)
+            elif n0 or n1:
+                c = DOM_COLORS[0 if n0 else 1]
+                col = (c[0] * 1.3, c[1] * 1.3, c[2] * 1.3, 1)
+            else:
+                col = (1.3, 1.3, 1.3, 1)
+        elif m.played[i] and m.result[i] >= 0:
+            c = DOM_COLORS[m.result[i]]
+            col = (c[0], c[1], c[2], 0.6)
         else:
-            col = (1, 1, 1, 1)
-        if 0.01 < abs(prog) < 0.999:
-            blink = 0.5 + 0.5 * math.sin(world.time * 10)
-            c2 = TEAM_COLORS[0 if prog > 0 else 1]
-            col = tuple(col[k] * (1 - blink) + c2[k] * 1.3 * blink for k in range(3)) + (1,)
+            col = (0.45, 0.45, 0.45, 0.6)
         out.append(col)
     return out

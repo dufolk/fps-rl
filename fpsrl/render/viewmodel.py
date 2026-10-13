@@ -8,6 +8,7 @@ from panda3d.core import (AmbientLight, AntialiasAttrib, Camera, DirectionalLigh
                           PointLight, Vec3, Vec4)
 
 from ..weapons import WEAPONS
+from .viewer import gold_tint
 from .effects import _additive, _card
 from .meshes import MeshBuilder
 from .models import GLOVE, TEAM_STYLE, PartSet
@@ -66,6 +67,38 @@ INSPECT = {
                 (0.7, (-0.04, 0, 0.13), (180, 40, -30)), (1.05, (-0.04, 0, 0.02), (360, 0, -30)),
                 (1.75, (-0.04, 0, 0.03), (370, 6, -34)), (2.2, (0, 0, 0), (360, 0, 0))],
 }
+
+
+# reload keyframes: (progress, pos offset, hpr offset). Tilt in, yank the mag out, swap, slam it in,
+# roll over and rack the bolt, back to rest; the snaps are only ~50 ms apart.
+RELOAD_KEYS = (
+    (0.00, (0.0, 0.0, 0.0), (0, 0, 0)),
+    (0.10, (-0.03, 0.0, -0.05), (6, -8, 32)),
+    (0.17, (-0.03, 0.0, -0.05), (6, -8, 32)),
+    (0.20, (-0.03, 0.005, -0.03), (6, -2, 38)),
+    (0.25, (-0.035, 0.0, -0.065), (7, -11, 33)),
+    (0.45, (-0.04, -0.01, -0.07), (8, -13, 29)),
+    (0.52, (-0.035, 0.0, -0.065), (6, -15, 30)),
+    (0.55, (-0.03, 0.012, -0.032), (6, -1, 37)),
+    (0.61, (-0.03, 0.0, -0.05), (5, -8, 30)),
+    (0.69, (0.0, -0.01, -0.04), (-6, 4, -18)),
+    (0.76, (0.0, -0.045, -0.042), (-8, 9, -23)),
+    (0.80, (0.0, 0.006, -0.034), (-6, -1, -15)),
+    (0.92, (0.0, 0.0, -0.005), (0, 0, -2)),
+    (1.00, (0.0, 0.0, 0.0), (0, 0, 0)),
+)
+
+
+def _reload_pose(p: float, scale: float = 1.0):
+    p = max(0.0, min(1.0, p))
+    for (t0, p0, h0), (t1, p1, h1) in zip(RELOAD_KEYS, RELOAD_KEYS[1:]):
+        if p <= t1:
+            u = (p - t0) / max(t1 - t0, 1e-6)
+            u = u * u * (3 - 2 * u)
+            pos = Vec3(*(a + (b - a) * u for a, b in zip(p0, p1)))
+            hpr = Vec3(*(a + (b - a) * u for a, b in zip(h0, h1)))
+            return pos * scale, hpr * scale
+    return Vec3(0), Vec3(0)
 
 
 def _inspect_pose(kind: str, t: float):
@@ -135,7 +168,7 @@ class ViewModel:
         self.sleeve = TEAM_STYLE[team]["shirt"]
         self.flash_tex = base_textures(base).sprite("flash")
         self.side_tex = base_textures(base).sprite("flash_side")
-        for name in ("ak47", "awm", "deagle", "knife", "frag", "smoke"):
+        for name in ("ak47", "awm", "deagle", "knife", "frag", "smoke", "flash", "molotov"):
             self._ensure(name)
         # shell casings
         self.casings = []
@@ -282,7 +315,7 @@ class ViewModel:
         if t == "shot":
             spec = WEAPONS[e["weapon"]]
             self._ensure(e["weapon"])
-            k = {"awm": 2.6, "deagle": 1.8}.get(e["weapon"], KICK.get(spec.category, 1.0))
+            k = {"awm": 2.6, "deagle": 1.8, "glock": 1.1, "nova": 2.3}.get(e["weapon"], KICK.get(spec.category, 1.0))
             fls = self.flashes.get(e["weapon"], [])
             if spec.dual:
                 self.dual_side ^= 1
@@ -306,8 +339,8 @@ class ViewModel:
                 self._play("bolt", spec.interval * 0.9)
         elif t == "melee":
             self._play("stab" if e["heavy"] else "slash", 0.5 if e["heavy"] else 0.32)
-        elif t == "throw_start":
-            self._play("throw", 0.55)
+        elif t == "throw":
+            self._play("throw", 0.4)
         elif t == "switch":
             self._play("draw", WEAPONS[e["weapon"]].draw_time)
         elif t in ("busy", "gadget_placed", "launch"):
@@ -394,12 +427,19 @@ class ViewModel:
         hpr += Vec3(0, self.kick * (2.4 if a < 0.5 else 1.0), self.kick * self.kick_roll * 1.5)
         if agent.crouching:
             pos += Vec3(0.005, 0, -0.01)
+        if spec.kind == "grenade" and agent.throw_at >= 0 and agent.cook_until > 0:
+            left = agent.cook_until - now
+            k = 1.0 - max(0.0, left) / max(spec.fuse, 1e-3)
+            k = max(0.0, min(1.0, k))
+            wobble = math.sin(now * (14.0 + 28.0 * k)) * (0.004 + 0.014 * k)
+            pos += Vec3(wobble, -0.05, 0.07)
+            hpr += Vec3(0, 28, wobble * 90)
 
         if agent.reloading:
             p = 1.0 - (agent.reload_until - now) / spec.reload_time
-            s = math.sin(math.pi * max(0.0, min(1.0, p)))
-            pos += Vec3(-0.02 * s, 0, -0.09 * s)
-            hpr += Vec3(8 * s, -18 * s, 28 * s)
+            dp, dh = _reload_pose(p, 0.75 if style in ("pistol", "dual") else 1.0)
+            pos += dp
+            hpr += dh
         if agent.ads or agent.reloading:
             self.cancel_inspect()
         if self.anim is not self._anim_ref:
@@ -446,6 +486,10 @@ class ViewModel:
             holder.hide()
         holder.setPos(pos)
         holder.setHpr(hpr)
+        if world.mode.name == "dom" and now < agent.protect_until:
+            holder.setColorScale(gold_tint(now))
+        else:
+            holder.setColorScale(1, 1, 1, 1)
 
         if self.flash_t > 0:
             self.flash_t -= dt

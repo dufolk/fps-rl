@@ -249,6 +249,7 @@ class Effects:
         self.root = root
         self.sparks = ParticleSystem(root, textures.sprite("spark"), True, 260, "sparks")
         self.fire = ParticleSystem(root, textures.sprite("smoke"), True, 90, "fire")
+        self.flames = ParticleSystem(root, textures.sprite("smoke"), True, 160, "flames")
         self.flash = ParticleSystem(root, textures.sprite("flash"), True, 24, "flash")
         self.dust = ParticleSystem(root, textures.sprite("smoke"), False, 200, "dust")
         self.smoke = ParticleSystem(root, textures.sprite("smoke"), False, 260, "smoke")
@@ -258,13 +259,15 @@ class Effects:
         self.scorches = DecalSystem(root, textures.sprite("scorch"), 12, 3.2, "scorch")
         self.lights = FlashLights(base.render, 2)
         self.smoke_clouds = {}
+        self.fire_zones = {}
 
     def clear(self):
-        for ps in (self.sparks, self.fire, self.flash, self.dust, self.smoke, self.blood):
+        for ps in (self.sparks, self.fire, self.flames, self.flash, self.dust, self.smoke, self.blood):
             ps.clear()
         self.holes.clear()
         self.scorches.clear()
         self.smoke_clouds.clear()
+        self.fire_zones.clear()
 
     # ------------------------------------------------------------------ events
     def muzzle(self, pos, direction, big=False, light=True, small=False):
@@ -352,9 +355,27 @@ class Effects:
         self.lights.flash(p + Vec3(0, 0, 0.3), (30, 30, 30), 0.12, atten=0.02)
         self.flash.emit(p, life=0.1, size0=1.5, size1=4.0, c0=(1, 1, 1, 1), c1=(1, 1, 1, 0))
 
+    def _flame(self, origin, radius, burst):
+        ang = random.uniform(0, math.tau)
+        r = radius * (random.uniform(0.0, 0.95) if not burst else random.uniform(0.05, 0.7))
+        pos = origin + Vec3(math.cos(ang) * r, math.sin(ang) * r, random.uniform(0.02, 0.25))
+        rise = random.uniform(2.2, 4.5) if burst else random.uniform(1.1, 2.6)
+        self.flames.emit(pos, Vec3(random.uniform(-0.3, 0.3), random.uniform(-0.3, 0.3), rise),
+                         random.uniform(0.28, 0.55), random.uniform(0.35, 0.7), random.uniform(0.15, 0.4),
+                         (1.0, random.uniform(0.4, 0.7), 0.08, 0.95), (0.45, 0.05, 0.0, 0.0),
+                         grav=-0.6, drag=1.4, spin=random.uniform(-40, 40))
+
     def smoke_grenade(self, sid, pos, radius, duration):
         self.smoke_clouds[sid] = {"pos": Point3(*pos), "radius": radius, "t": 0.0, "dur": duration,
                                   "emitted": 0}
+
+    def fire_zone(self, sid, pos, radius, duration):
+        p = Point3(*pos)
+        self.fire_zones[sid] = {"pos": p, "radius": radius, "t": 0.0, "dur": duration}
+        self.scorches.place(Point3(p.x, p.y, p.z - 0.02), Vec3(0, 0, 1), size=radius * 1.4,
+                            color=(0.2, 0.06, 0.02, 0.85))
+        for _ in range(16):
+            self._flame(p, radius, burst=True)
 
     def update(self, dt):
         for sid, c in list(self.smoke_clouds.items()):
@@ -375,7 +396,21 @@ class Effects:
                                 drag=0.3, spin=random.uniform(-6, 6), hold=0.85)
             if c["t"] > c["dur"]:
                 del self.smoke_clouds[sid]
-        for ps in (self.sparks, self.fire, self.flash, self.dust, self.smoke, self.blood):
+        for sid, c in list(self.fire_zones.items()):
+            c["t"] += dt
+            for _ in range(4):
+                self._flame(c["pos"], c["radius"], burst=False)
+            if random.random() < 0.45:
+                r = c["radius"] * 0.35
+                off = Vec3(random.uniform(-r, r), random.uniform(-r, r), random.uniform(0.4, 1.2))
+                shade = random.uniform(0.15, 0.28)
+                self.smoke.emit(c["pos"] + off, Vec3(0, 0, random.uniform(0.3, 0.8)),
+                                random.uniform(0.8, 1.4), 0.5, random.uniform(1.2, 2.0),
+                                (shade, shade * 0.9, shade * 0.8, 0.45), (shade, shade, shade, 0.0),
+                                grav=-0.3, drag=0.8)
+            if c["t"] > c["dur"]:
+                del self.fire_zones[sid]
+        for ps in (self.sparks, self.fire, self.flames, self.flash, self.dust, self.smoke, self.blood):
             ps.update(dt)
         self.tracers.update(dt)
         self.lights.update(dt)

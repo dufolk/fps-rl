@@ -1,88 +1,108 @@
-"""HP Town (占点小镇) for Domination.
+"""HP Town (占点小镇) for Domination, rebuilt from the level export in domin/.
 
-Source data is in centimetres in the editor's X/Z plane (activity area X 1950-9950, Z 1450-9600).
-World coordinates: x = (X - 5950) / 100 (east), y = -(Z - 5525) / 100 (north), so the map spans
-about 80 m x 81.5 m centred on the origin.
+`tools/import_hp_city.py` voxelizes HP_City_Main.obj into boxes (data/hp_city.npz): textured
+visual boxes, material-agnostic collision boxes, one box per crate / barrel / car, tree trunks,
+the three capture zones (Point_A/B/C) and the spawn points from the design sheet.
 
-If `fpsrl/maps/data/hp_town.json` exists (generated from the raw point data by
-`tools/import_town.py`), its walls / zones / spawns are used. Otherwise the layout below, traced
-from the overlay screenshot, is built.
+World frame: x = (UE X - 5950) / 100 east, y = -(UE Y - 5525) / 100 north, z up, metres.
+A sits north of the centre between 红房 (west) and 黑房 (east), B south-west, C east on the
+raised east yard. Red (team 0) spawns on the south-east terrace, blue (team 1) in the north-west.
 """
 from __future__ import annotations
 
-import json
 import os
+
+import numpy as np
 
 from .base import Box, MapData, Prop
 
-CX, CZ = 5950.0, 5525.0
-DATA = os.path.join(os.path.dirname(__file__), "data", "hp_town.json")
-
-
-def to_world(X, Z):
-    return (X - CX) / 100.0, -(Z - CZ) / 100.0
-
-
-def _poly(pts):
-    return [list(to_world(X, Z)) for X, Z in pts]
-
-
-# capture zones traced from the overlay (centimetres, editor X/Z)
-ZONES_CM = {
-    "A": [(4080, 3580), (6280, 3580), (6280, 4250), (6180, 4250), (6180, 5650), (5800, 5880), (4450, 5880),
-          (4080, 5700), (4080, 4200), (4180, 4200), (4180, 3800), (4080, 3800)],
-    "B": [(2750, 7000), (4080, 7000), (4080, 7200), (4400, 7200), (4400, 7300), (5600, 7300), (5600, 7600),
-          (5700, 7600), (5700, 8550), (2750, 8550)],
-    "C": [(8050, 5400), (9100, 5400), (9100, 5550), (9600, 5550), (9600, 6300), (9100, 6300), (9100, 6400),
-          (8000, 6400), (8000, 5750), (8050, 5750)],
-}
-
-
-def _zones():
-    return [{"name": k, "poly": _poly(v), "zmin": -0.5, "zmax": 4.0, "z": 0.1} for k, v in ZONES_CM.items()]
-
-
-def _from_json(path):
-    with open(path, encoding="utf-8") as fh:
-        d = json.load(fh)
-    boxes = [Box(tuple(b["mn"]), tuple(b["mx"]), b.get("mat", "brick"), tag=b.get("tag", "wall"))
-             for b in d["boxes"]]
-    props = [Prop(p["kind"], tuple(p["pos"]), p.get("params", {})) for p in d.get("props", [])]
-    return boxes, props, d
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "hp_city.npz")
+CRATE = (1.13, 1.05)  # 补给箱 footprint / height on each 底座
 
 
 def build() -> MapData:
+    d = np.load(DATA)
+    mats = [str(m) for m in d["mats"]]
     boxes: list[Box] = []
-    props: list[Prop] = []
-    x0, x1, y0, y1 = -40.0, 40.0, -40.75, 40.75
-    # ground: asphalt everywhere, raised tiled plazas
-    boxes.append(Box((x0 - 2, y0 - 2, -1.0), (x1 + 2, y1 + 2, 0.0), "asphalt", tag="ground"))
-    extra = None
-    if os.path.exists(DATA):
-        jb, jp, extra = _from_json(DATA)
-        boxes += jb
-        props += jp
-    else:
-        _traced(boxes, props)
-    # perimeter walls
-    H = 9.0
-    for mn, mx in (((x0 - 1, y0 - 1, 0), (x0, y1 + 1, H)), ((x1, y0 - 1, 0), (x1 + 1, y1 + 1, H)),
-                   ((x0, y0 - 1, 0), (x1, y0, H)), ((x0, y1, 0), (x1, y1 + 1, H))):
-        boxes.append(Box(mn, mx, "brick_dark", tag="wall"))
+    for a, b, m in zip(d["mn"], d["mx"], d["mat"]):
+        boxes.append(Box(tuple(map(float, a)), tuple(map(float, b)), mats[m], solid=False, blocks_bullets=False,
+                         tag="ground" if a[2] <= -0.99 else "wall"))
+    cmn, cmx = d["cmn"].astype(np.float64), d["cmx"].astype(np.float64)
+    for a, b in zip(cmn, cmx):
+        boxes.append(Box(tuple(a), tuple(b), "concrete", visible=False, tag="wall"))
+    def off_grid(v, inward, gap=0.01):
+        """Keep prop faces >= `gap` off the 0.1 m voxel planes so they don't z-fight with them."""
+        g = np.round(v / 0.1) * 0.1
+        return np.where(np.abs(v - g) < gap, g + inward * gap, v)
 
-    spawns = {
-        0: [(-36.0 + (i % 5) * 2.6, -37.0 + (i // 5) * 2.6, 0.0, 60.0) for i in range(10)],
-        1: [(24.0 + (i % 5) * 2.6, 24.0 + (i // 5) * 2.6, 0.0, 240.0) for i in range(10)],
-    }
-    zones = _zones()
-    if extra is not None:
-        if extra.get("spawns"):
-            spawns = {int(k): [tuple(s) for s in v] for k, v in extra["spawns"].items()}
-        if extra.get("points"):
-            zones = extra["points"]
-    strategic = [(-8.5, 9.0), (-17.0, -22.0), (28.0, -3.5), (-28.0, 12.0), (-28.0, -6.0), (10.0, 14.0),
-                 (12.0, -14.0), (25.0, 12.0), (-6.0, -9.5), (2.0, -36.0), (-20.0, 24.0), (8.0, 24.0),
-                 (30.0, -26.0), (-36.0, -20.0), (20.0, -36.0), (-8.0, -30.0)]
+    for k, (a, b, m) in enumerate(zip(d["pmn"], d["pmx"], d["pmat"])):
+        if float(a[2]) >= 6.0:  # lamp heads and tarp scraps above the playable skyline
+            continue
+        inset = 0.0015 * (k % 11)  # props overlapping each other get distinct face planes
+        a, b = off_grid(a.astype(np.float64), 1) + inset, off_grid(b.astype(np.float64), -1) - inset
+        boxes.append(Box(tuple(map(float, a)), tuple(map(float, b)), mats[m], tag="cover"))
+    props: list[Prop] = []
+    for x, y, z, h in d["trees"].astype(np.float64):
+        r = 0.2
+        boxes.append(Box((x - r, y - r, z), (x + r, y + r, z + min(h * 0.45, 4.0)), "wood_planks", visible=False,
+                         tag="trunk"))
+        props.append(Prop("tree", (x, y, z), {"scale": h / 3.8, "autumn": True, "seed": int(abs(x * 7 + y * 13))}))
+    s, hgt = CRATE[0] / 2, CRATE[1]
+    for x, y, z in d["pads"].astype(np.float64):
+        boxes.append(Box((x - s, y - s, z), (x + s, y + s, z + hgt), "crate", tag="crate"))
+
+    solid_mn = np.concatenate([cmn, d["pmn"]])
+    solid_mx = np.concatenate([cmx, d["pmx"]])
+
+    def ground(x, y, below=99.0, r=0.45):
+        """Highest floor top under the player's footprint (voxel floors step by 0.1 m)."""
+        inside = (solid_mn[:, 0] < x + r) & (x - r < solid_mx[:, 0]) & (solid_mn[:, 1] < y + r) & (y - r < solid_mx[:, 1])
+        tops = solid_mx[inside, 2]
+        tops = tops[tops <= below]
+        return float(tops.max()) if len(tops) else 0.0
+
+    def free(x, y, z):
+        r = 0.45
+        return not np.any((solid_mn[:, 0] < x + r) & (solid_mx[:, 0] > x - r) & (solid_mn[:, 1] < y + r)
+                          & (solid_mx[:, 1] > y - r) & (solid_mn[:, 2] < z + 1.9) & (solid_mx[:, 2] > z + 0.01))
+
+    def spots(pts, yaw, n=10, step=1.4, radius=7.0):
+        """The design-sheet spawns first, then clear spots around them on the same floor."""
+        out = []
+        for x, y, z in pts:
+            g = ground(x, y, z + 0.5)
+            out.append((float(x), float(y), g + 0.02, yaw))
+        cx, cy = np.mean(pts[:, 0]), np.mean(pts[:, 1])
+        fz = out[0][2]
+        k = int(radius / step)
+        cand = sorted(((cx + i * step, cy + j * step) for i in range(-k, k + 1) for j in range(-k, k + 1)),
+                      key=lambda p: (p[0] - cx) ** 2 + (p[1] - cy) ** 2)
+        for x, y in cand:
+            if len(out) >= n:
+                break
+            z = ground(x, y, fz + 0.5)
+            if abs(z - fz) > 0.5 or not free(x, y, z):
+                continue
+            if all(np.hypot(x - o[0], y - o[1]) >= step * 0.9 for o in out):
+                out.append((float(x), float(y), z + 0.02, yaw))
+        return out
+
+    spawns = {0: spots(d["spawn0"].astype(np.float64) - [0, 0, 0.9], 120.0),
+              1: spots(d["spawn1"].astype(np.float64) - [0, 0, 0.9], 300.0)}
+    points = []
+    for name, z in zip(d["zone_names"], d["zone_z"]):
+        poly = d[f"zone_{name}"].astype(np.float64).round(2).tolist()
+        points.append({"name": str(name), "poly": poly, "zmin": float(z) - 1.0, "zmax": float(z) + 3.6,
+                       "z": float(z)})
+    x0, y0, x1, y1 = d["reach"].astype(np.float64)
+    x0, y0, x1, y1 = x0 - 0.5, y0 - 0.5, x1 + 0.5, y1 + 0.5
+    for mn, mx in (((x0 - 1, y0 - 1, -1), (x0, y1 + 1, 40)), ((x1, y0 - 1, -1), (x1 + 1, y1 + 1, 40)),
+                   ((x0, y0 - 1, -1), (x1, y0, 40)), ((x0, y1, -1), (x1, y1 + 1, 40))):
+        boxes.append(Box(mn, mx, "concrete", visible=False, tag="wall"))
+    candidates = [(-8.0, 9.0), (-17.0, -23.0), (28.0, -3.5), (-27.5, 9.5), (11.5, 9.5), (0.0, 28.0),
+                  (27.0, 18.0), (7.0, -27.0), (5.0, -7.0), (-28.0, 26.0), (26.0, -32.0), (-31.0, -8.0),
+                  (-31.0, -32.0), (31.0, 28.0), (16.0, -16.0), (-14.0, 27.0)]
+    strategic = [(x, y) for x, y in candidates if free(x, y, ground(x, y, 3.5))]
     return MapData(
         name="hp_town",
         boxes=boxes,
@@ -94,111 +114,6 @@ def build() -> MapData:
         sun_dir=(-0.5, 0.42, -0.7),
         theme="town",
         modes=("dom", "tdm"),
-        objectives={"points": zones},
-        nav_max_floor=1.0,
+        objectives={"points": points},
+        nav_max_floor=5.0,
     )
-
-
-def _traced(boxes, props):
-    """Hand-traced building blocks / cover from the overlay (world metres)."""
-    mats = ("brick", "plaster_white", "plaster_yellow", "brick", "plaster_blue", "plaster_white")
-
-    def bld(xa, ya, xb, yb, h=7.0, k=0, roof=True):
-        m = mats[k % len(mats)]
-        boxes.append(Box((xa, ya, 0.0), (xb, yb, h), m, tag="building"))
-        if roof:
-            boxes.append(Box((xa - 0.3, ya - 0.3, h), (xb + 0.3, yb + 0.3, h + 0.5),
-                             "roof" if k % 2 == 0 else "roof_grey", tag="roof"))
-
-    def low(xa, ya, xb, yb, h=1.1, m="concrete"):
-        boxes.append(Box((xa, ya, 0.0), (xb, yb, h), m, tag="cover"))
-
-    def plaza(xa, ya, xb, yb, m="tile_floor"):
-        boxes.append(Box((xa, ya, 0.0), (xb, yb, 0.1), m, tag="ground"))
-
-    def crate(x, y, s=1.2, z=0.0, m="crate"):
-        boxes.append(Box((x - s / 2, y - s / 2, z), (x + s / 2, y + s / 2, z + s), m, tag="crate"))
-
-    # --- north district (Z 1450-3460)
-    bld(-38.5, 27.0, -27.0, 38.5, 8.0, 0)
-    bld(-22.0, 29.5, -11.0, 38.5, 7.0, 1)
-    bld(-3.0, 31.0, 7.0, 38.5, 9.0, 2)
-    bld(11.0, 26.5, 16.5, 38.5, 7.0, 3)
-    bld(18.2, 32.6, 38.5, 38.5, 8.0, 4)
-    plaza(-10.0, 22.5, -4.0, 28.5, "grass")
-    props.append(Prop("tree", (-7.0, 25.5, 0.1), {}))
-    # north row of shopfronts with alleys (the long Z 3460 line)
-    for xa, xb in ((-36.5, -31.0), (-27.0, -20.5), (-6.0, 4.0), (9.0, 18.5), (27.0, 36.9)):
-        bld(xa, 20.6, xb, 23.0, 4.0, int(xa) % 5, roof=False)
-    # --- west block (X 2300-4040)
-    bld(-36.5, 8.5, -26.0, 18.0, 7.0, 1)
-    bld(-36.5, -1.6, -27.5, 5.0, 6.0, 3)
-    bld(-24.0, 12.0, -21.0, 17.0, 3.2, 5, roof=False)
-    low(-24.0, 2.0, -22.8, 7.0)
-    # --- A plaza (X 4100-6300, Z 3600-5900) with central fountain
-    plaza(-18.4, -3.6, 3.4, 19.2)
-    boxes.append(Box((-10.0, 7.7, 0.0), (-7.0, 10.7, 0.8), "stone_dark", tag="fountain"))
-    boxes.append(Box((-8.9, 8.8, 0.8), (-8.1, 9.6, 2.2), "stone_dark", tag="fountain"))
-    for x, y in ((-15.5, 15.5), (-1.0, 15.5), (-15.0, 1.0), (0.0, 1.5)):
-        low(x - 1.6, y - 0.4, x + 1.6, y + 0.4, 0.5, "wood_planks")      # benches
-    low(-14.5, 4.0, -12.0, 6.6, 1.1, "concrete")                          # planters
-    low(-5.0, 11.0, -2.5, 13.6, 1.1, "concrete")
-    crate(-16.5, 9.0)
-    crate(1.5, 8.0)
-    crate(1.5, 9.2)
-    props.append(Prop("tree", (-13.25, 5.3, 1.1), {}))
-    props.append(Prop("tree", (-3.75, 12.3, 1.1), {}))
-    # walls framing A on east / west (with entrances)
-    bld(-20.5, 4.0, -18.6, 12.0, 4.0, 0, roof=False)
-    bld(3.6, 9.0, 5.4, 18.0, 4.0, 2, roof=False)
-    bld(3.6, -2.0, 5.4, 4.0, 4.0, 2, roof=False)
-    # --- centre-east block (X 6300-7900)
-    bld(8.0, 9.5, 17.0, 18.0, 8.0, 0)
-    bld(8.0, -1.0, 14.0, 5.5, 6.0, 4)
-    low(15.5, 1.0, 17.0, 4.0)
-    props.append(Prop("car", (18.5, 6.5, 0.0), {"yaw": 90.0, "color": (0.15, 0.3, 0.55)}))
-    boxes.append(Box((17.65, 4.4, 0.0), (19.35, 8.6, 1.45), "metal_dark", visible=False, tag="car"))
-    # --- east (X 7900-9950)
-    bld(22.0, 7.5, 34.0, 18.0, 8.0, 3)
-    bld(36.0, 4.0, 40.0, 18.0, 6.0, 1)
-    bld(22.0, -22.0, 37.0, -12.5, 7.0, 5)
-    # C courtyard cover
-    low(26.0, -5.0, 28.6, -3.8)
-    crate(31.5, -1.0)
-    crate(32.7, -1.0)
-    crate(32.1, -1.0, 1.0, 1.2)
-    low(23.0, -1.5, 24.2, 0.8, 1.1, "wood_planks")
-    props.append(Prop("tree", (30.5, 3.2, 0.0), {}))
-    props.append(Prop("tree", (31.0, -12.2, 0.0), {}))
-    # --- between A and B (X 4100-5900, Z 5900-7000)
-    bld(-14.5, -13.0, -3.5, -6.0, 6.0, 1)
-    low(-17.5, -10.5, -16.3, -7.5)
-    # --- B yard (X 2750-5700, Z 7000-8550)
-    plaza(-31.9, -30.2, 0.4, -14.8, "concrete")
-    low(-20.0, -26.0, -17.0, -24.8, 1.1, "wood_planks")
-    low(-12.5, -21.0, -11.3, -17.5)
-    crate(-26.0, -20.0)
-    crate(-24.8, -20.0)
-    crate(-26.0, -20.0, 1.2, 1.2)
-    crate(-6.0, -27.0, 1.4, 0.0, "crate_big")
-    props.append(Prop("car", (-28.5, -26.5, 0.1), {"yaw": 0.0, "color": (0.6, 0.12, 0.1)}))
-    boxes.append(Box((-30.6, -27.35, 0.0), (-26.4, -25.65, 1.45), "metal_dark", visible=False, tag="car"))
-    # west of B and the south-west spawn
-    bld(-38.5, -12.0, -33.5, -4.0, 6.0, 2)
-    bld(-38.5, -28.0, -34.0, -16.0, 6.0, 0)
-    # --- south-centre divider (X 5875 line) and south-east buildings
-    bld(0.8, -31.0, 4.5, -19.0, 7.0, 3)
-    bld(0.8, -15.0, 4.5, -4.5, 7.0, 3)
-    bld(8.0, -30.0, 18.0, -19.0, 8.0, 4)
-    bld(8.0, -13.0, 16.0, -6.0, 6.0, 0)
-    low(19.0, -28.0, 20.2, -24.0)
-    low(-4.0, -36.5, -1.5, -35.3)
-    bld(6.0, -40.75, 18.0, -35.0, 5.0, 1)
-    props.append(Prop("tree", (21.5, -36.7, 0.0), {}))
-    props.append(Prop("tree", (31.0, -36.7, 0.0), {}))
-    props.append(Prop("tree", (-32.5, -39.0, 0.0), {}))
-    props.append(Prop("tree", (-36.0, 31.2, 0.0), {}))
-    # NE spawn plaza cover
-    low(26.0, 29.5, 29.0, 30.7)
-    for x, y in ((-30.0, 0.0), (6.5, 19.5), (20.0, -3.0), (-2.0, -16.5), (20.5, 22.5), (-20.0, -32.5)):
-        props.append(Prop("lamp", (x, y, 0.0), {"yaw": 0.0}))

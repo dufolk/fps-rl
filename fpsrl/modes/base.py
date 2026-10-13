@@ -12,6 +12,7 @@ class GameMode:
     name = "tdm"
     free_weapons = True  # primaries chosen freely from the menu (no economy)
     spawn_protect = C.SPAWN_PROTECT
+    move_scale = 1.0  # multiplied into run speed; Siege is slower than the other modes
     DEFAULTS: dict = {}
 
     def __init__(self, world):

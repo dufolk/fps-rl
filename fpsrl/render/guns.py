@@ -165,6 +165,29 @@ def build_uzi():
                        eject=(0.03, 0.06, 0.06))
 
 
+def build_glock():
+    ps = PartSet("glock")
+    m, p = ps.b("metal"), ps.b("poly")
+    poly = (0.13, 0.13, 0.14, 1)
+    slide = (0.18, 0.18, 0.19, 1)
+    m.box((-0.013, -0.025, 0.03), (0.013, 0.15, 0.056), slide)          # squared slide
+    for i in range(4):
+        y = -0.022 + i * 0.006
+        m.box((-0.0136, y, 0.034), (0.0136, y + 0.002, 0.052), BLACK)   # rear serrations
+    m.cylinder((0, 0.15, 0.043), (0, 0.172, 0.043), 0.006, BLACK, 10)   # barrel
+    p.box((-0.014, -0.01, 0.0), (0.014, 0.135, 0.032), poly)            # frame
+    p.box((-0.01, 0.07, -0.008), (0.01, 0.125, 0.0), BLACK)             # accessory rail
+    obox(p, (0, -0.012, -0.048), (0.028, 0.042, 0.1), (0, -20, 0), poly)
+    p.box((-0.015, -0.028, -0.105), (0.015, 0.012, -0.092), BLACK)      # magazine floorplate
+    _trigger_group(m, BLACK, 0.03, 0.075)
+    m.box((-0.003, 0.155, 0.056), (0.003, 0.163, 0.066), BLACK)         # front sight
+    m.box((-0.011, -0.012, 0.056), (-0.004, -0.002, 0.064), BLACK)      # rear sight notch
+    m.box((0.004, -0.012, 0.056), (0.011, -0.002, 0.064), BLACK)
+    node = ps.node()
+    return node, _info((0, 0.175, 0.043), 0.066, grip=(0, -0.012, -0.03), fore=(-0.01, 0.04, -0.04),
+                       eject=(0.016, 0.05, 0.05))
+
+
 def build_beretta(name="dualies"):
     ps = PartSet(name)
     m, c = ps.b("metal"), ps.b("chrome")
@@ -230,6 +253,30 @@ def build_m249():
     p.tapered(-0.42, -0.12, 0.045, 0.12, 0.05, 0.07, -0.075, -0.0, BLACK)
     node = ps.node()
     return node, _info((0, 0.705, 0.04), 0.112, fore=(0, 0.3, 0.0), eject=(0.035, 0.05, 0.03))
+
+
+def build_nova():
+    ps = PartSet("nova")
+    m, w = ps.b("metal"), ps.b("wood")
+    wood = (0.38, 0.22, 0.11, 1)
+    m.box((-0.024, -0.1, 0.0), (0.024, 0.14, 0.068), BLACK)              # receiver
+    m.box((0.024, -0.02, 0.025), (0.03, 0.08, 0.055), STEEL)             # loading / ejection port
+    m.cylinder((0, 0.14, 0.05), (0, 0.66, 0.05), 0.013, BLACK, 14)       # barrel
+    m.cylinder((0, 0.14, 0.018), (0, 0.6, 0.018), 0.012, DARK, 12)       # magazine tube
+    m.cylinder((0, 0.6, 0.018), (0, 0.615, 0.018), 0.014, BLACK, 12)     # tube cap
+    m.box((-0.006, 0.585, 0.024), (0.006, 0.62, 0.05), BLACK)            # barrel clamp
+    m.box((-0.003, 0.64, 0.063), (0.003, 0.65, 0.074), (0.75, 0.6, 0.2, 1))  # bead sight
+    m.box((-0.01, -0.08, 0.068), (0.01, 0.12, 0.076), DARK)              # top rib
+    w.box((-0.026, 0.2, -0.004), (0.026, 0.36, 0.04), wood)              # pump
+    for k in range(5):
+        y = 0.215 + k * 0.03
+        w.box((-0.0275, y, 0.0), (0.0275, y + 0.01, 0.036), (0.3, 0.17, 0.08, 1))
+    _pistol_grip(w, wood, angle=-22)
+    _trigger_group(m, BLACK)
+    w.tapered(-0.42, -0.1, 0.045, 0.125, 0.04, 0.07, -0.08, -0.005, wood)  # stock
+    m.box((-0.024, -0.43, -0.08), (0.024, -0.415, 0.05), BLACK)          # recoil pad
+    node = ps.node()
+    return node, _info((0, 0.665, 0.05), 0.076, fore=(0, 0.28, -0.0), eject=(0.035, 0.03, 0.04))
 
 
 # ----------------------------------------------------------------------------- objective items
@@ -367,8 +414,8 @@ def build_camera():
 
 GUN_BUILDERS = {
     "m4a4": build_m4a4, "m4a1": build_m4a1, "famas": build_famas, "mp5": build_mp5, "mp9": build_mp9,
-    "uzi": build_uzi, "dualies": build_dualies, "scar20": build_scar20, "m249": build_m249,
-    "flash": build_flash, "c4": build_c4, "defuser": build_defuser,
+    "uzi": build_uzi, "glock": build_glock, "dualies": build_dualies, "scar20": build_scar20, "m249": build_m249,
+    "nova": build_nova, "flash": build_flash, "c4": build_c4, "defuser": build_defuser,
     "breach": build_charge("breach", (0.3, 0.3, 0.25, 1)),
     "thermite": build_charge("thermite", (0.55, 0.35, 0.15, 1), (0.22, 0.06, 0.3)),
     "castle": build_charge("castle", (0.2, 0.22, 0.25, 1), (0.25, 0.03, 0.18)),

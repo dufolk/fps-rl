@@ -30,12 +30,14 @@ class Profile:
     ads_toggle: bool = False
     volume: float = 0.8
     show_fps: bool = False
-    fullscreen: bool = False
+    borderless: bool = False
     primary: str = "ak47"
     skins: dict = field(default_factory=dict)  # weapon -> skin key
     single: dict = field(default_factory=lambda: {"map": "transport_ship", "mode": "tdm", "team_size": 4,
                                                   "difficulty": "normal", "team": 0, "kill_limit": 60,
                                                   "time_limit": 420})
+    watch: dict = field(default_factory=lambda: {"map": "transport_ship", "mode": "tdm", "team_size": 4,
+                                                 "difficulty": "normal", "kill_limit": 60, "time_limit": 420})
     host: dict = field(default_factory=lambda: {"room": "运输船", "port": 47777, "map": "transport_ship",
                                                 "mode": "tdm", "team_size": 4, "difficulty": "normal",
                                                 "kill_limit": 60, "time_limit": 600})
@@ -51,6 +53,9 @@ class Profile:
                 data = json.load(f)
         except (OSError, ValueError):
             return p
+        # Migrate the old exclusive-fullscreen preference to borderless fullscreen.
+        if "borderless" not in data and isinstance(data.get("fullscreen"), bool):
+            data["borderless"] = data["fullscreen"]
         known = {f.name: f for f in fields(cls)}
         for k, v in data.items():
             if k not in known:

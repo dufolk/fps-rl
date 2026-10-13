@@ -18,27 +18,43 @@ from direct.showbase.DirectObject import DirectObject
 from panda3d.core import Filename, KeyboardButton, MouseButton, WindowProperties
 
 from ..bots import Bot
-from ..maps import MAPS, default_mode
+from ..maps import MAPS, resolve_map_mode
 from ..profile import SENSITIVITY_STEP, clamp_sensitivity
 from ..net.protocol import (B_ALT, B_FIRE, B_RELOAD, apply_agent, apply_client_cmd, apply_world, encode_input,
                             input_to_action, world_state)
-from ..sim import TEAM_NAMES, Action, MatchConfig, World
-from ..weapons import NUM_SLOTS, PRIMARY_CHOICES, random_primary
+from ..sim import IDLE, TEAM_NAMES, Action, MatchConfig, World
+from ..weapons import LOADOUT_BY_KEY, NUM_SLOTS, PRIMARY_CHOICES, random_primary
 from .ime import hold as hold_ime
 from .viewer import BASE_HFOV, Viewer
 
 HELP_ZH = """[F1] 隐藏帮助
 WASD 移动    空格 跳    Ctrl/C 蹲    Shift 静步    Q/E 左右探头
-左键 开火/轻刀/投掷    右键 瞄准/开镜/重刀/低抛
-R 换弹    1-7 武器    X 上一把    滚轮 切换    F 交互(安包/拆包/加固/路障)·检视
-G 无人机/摄像头    B 购买/切换主武器    Tab 计分板
-Esc 菜单    F2 瞄准按住/切换    F3 第三人称    F4 FPS    +/- 灵敏度"""
+左键 开火/轻刀/按住捏雷松手投掷    右键 瞄准/开镜/重刀/低抛
+手雷捏太久会在手上爆炸；手雷、闪光、燃烧对队友和自己也有效
+R 换弹    1-9 武器    X 上一把    滚轮 切换    F 交互(安包/拆包/加固/路障)·检视
+G 无人机/摄像头    B 购买/选背包    Tab 计分板
+Esc 菜单    F2 瞄准按住/切换    F3 第三人称    F4 FPS    +/- 灵敏度
+死亡后 左键/右键 切换观战（默认第一人称）"""
 HELP_EN = """[F1] hide help
 WASD move    SPACE jump    CTRL/C crouch    SHIFT walk    Q/E lean
-LMB fire / slash / throw    RMB aim / scope / heavy stab / underhand
-R reload    1-7 weapons    X last weapon    wheel cycle    F use (plant/defuse/reinforce) / inspect
-G drone / cameras    B buy menu / cycle primary    TAB scoreboard
-ESC menu    F2 aim hold/toggle    F3 third person    F4 fps    +/- sensitivity"""
+LMB fire / slash / hold to cook, release to throw    RMB aim / scope / heavy stab / underhand
+HE grenades explode in hand if overcooked; HE, flash and molotov hit teammates and you
+R reload    1-9 weapons    X last weapon    wheel cycle    F use (plant/defuse/reinforce) / inspect
+G drone / cameras    B buy menu / loadout    TAB scoreboard
+ESC menu    F2 aim hold/toggle    F3 third person    F4 fps    +/- sensitivity
+When dead: LMB/RMB cycle spectate (first person by default)"""
+WATCH_HELP_ZH = """[F1] 隐藏帮助
+观战机器人。默认上帝视角，不受闪光弹影响
+WASD 移动    鼠标 转向    Q 上升    E 下降    Shift 加速
+F 切换第一人称 / 上帝视角
+第一人称时 左键/右键 切换对象
+Tab 计分板    Esc 菜单    F5 重开"""
+WATCH_HELP_EN = """[F1] hide help
+Watch the bots. God view by default; flashbangs do not blind you
+WASD move    mouse look    Q up    E down    SHIFT faster
+F toggles first person / god view
+In first person: LMB/RMB cycle targets
+TAB scoreboard    ESC menu    F5 restart"""
 
 
 class _Settings:
@@ -55,28 +71,30 @@ class _Settings:
 
 class PlayerController:
     def __init__(self, viewer: Viewer, settings, on_escape=None, on_primary=None, on_restart=None, on_buy=None,
-                 on_operator=None):
+                 on_operator=None, on_loadout=None, watch=False):
         self.viewer = viewer
         self.base = base = viewer.base
         self.settings = settings
         self.on_escape = on_escape
         self.on_primary = on_primary
         self.on_restart = on_restart
-        # B menu in round modes (buy in bomb mode, operator pick in Siege)
+        # B menu: buy in bomb mode, operator pick in Siege, loadout presets in TDM / domination
         self.overlay = None
-        if on_buy is not None or on_operator is not None:
+        if on_buy is not None or on_operator is not None or on_loadout is not None:
             from .buymenu import BuyMenu
             sound = (lambda n: viewer.audio.ui(n, 0.5)) if viewer.audio is not None else None
-            self.overlay = BuyMenu(viewer, on_buy or (lambda name: None), on_operator or (lambda n, p: None), sound)
+            self.overlay = BuyMenu(viewer, on_buy or (lambda name: None), on_operator or (lambda n, p: None),
+                                   self._loadout_cb(on_loadout), sound)
         self.enabled = True
         self.captured = False
+        self.watch = watch
         self.fire_latch = self.alt_latch = False
         self.use_latch = self.gadget_latch = False
         self.f_pending = 0
         self.view_look = [0.0, 0.0]
         self.ads_state = False
         self.switch_req = 0
-        self.show_help = True
+        self.show_help = not watch
         self.fps_t, self.fps_n = time.perf_counter(), 0
         self.mw = base.mouseWatcherNode
         self.kb = {k: KeyboardButton.asciiKey(k) for k in "wasdcrqefg"}
@@ -136,6 +154,13 @@ class PlayerController:
         if not self.captured:
             self.capture(True)
             return
+        if self.watch:
+            if not self.viewer.god:
+                self.viewer.cycle_follow(1 if which == "fire" else -1)
+            return
+        if self.viewer.spectate_active():
+            self.viewer.cycle_spectate(1 if which == "fire" else -1)
+            return
         if which == "fire":
             self.fire_latch = True
         else:
@@ -143,8 +168,19 @@ class PlayerController:
             if self.settings.ads_toggle:
                 self.ads_state = not self.ads_state
 
+    def _loadout_cb(self, on_loadout):
+        if on_loadout is None:
+            return None
+
+        def pick(key):
+            self.settings.primary = LOADOUT_BY_KEY[key][3]
+            return on_loadout(key)
+        return pick
+
     def _switch(self, slot):
-        if self.enabled:
+        if self._overlay_open():
+            self.overlay.pick_index(slot - 1)
+        elif self.enabled:
             self.switch_req = slot
 
     def _last(self):
@@ -164,6 +200,9 @@ class PlayerController:
         self.switch_req = slot
 
     def _use_press(self):
+        if self.watch and self.enabled and self.captured:
+            self.viewer.toggle_god()
+            return
         if self.enabled and self.captured:
             self.use_latch = True
             self.f_pending = 3
@@ -173,11 +212,11 @@ class PlayerController:
             self.gadget_latch = True
 
     def _buy_or_primary(self):
-        if not self.enabled:
+        if not self.enabled or self.watch:
             return
         if self._overlay_open():
             self.close_overlay()
-        elif self.overlay is not None and not self.viewer.world.mode.free_weapons:
+        elif self.overlay is not None:
             if self.overlay.open():
                 self.capture(False)
         else:
@@ -207,7 +246,11 @@ class PlayerController:
 
     def _help(self):
         if self.hud is not None:
-            text = (HELP_ZH if self.zh else HELP_EN) if self.show_help else "[F1] 帮助" if self.zh else "[F1] help"
+            if self.watch:
+                full = WATCH_HELP_ZH if self.zh else WATCH_HELP_EN
+            else:
+                full = HELP_ZH if self.zh else HELP_EN
+            text = full if self.show_help else "[F1] 帮助" if self.zh else "[F1] help"
             self.hud.set_help(text)
 
     def _toggle_help(self):
@@ -222,7 +265,7 @@ class PlayerController:
                   ("Aim mode: " + ("TOGGLE" if mode else "HOLD")))
 
     def _third_person(self):
-        if self.enabled:
+        if self.enabled and not self.watch:
             self.viewer.toggle_third_person()
 
     def _toggle_fps(self):
@@ -269,6 +312,10 @@ class PlayerController:
         dx, dy = md.getX() - win.getXSize() // 2, md.getY() - win.getYSize() // 2
         self._recenter()
         self.viewer.mouse_dx, self.viewer.mouse_dy = dx, dy
+        if self.watch:
+            if self.viewer.god:
+                self.viewer.fly_look(dx, dy, self.settings.sensitivity)
+            return
         if autoplay:
             return
         if agent.view_mode:
@@ -285,9 +332,21 @@ class PlayerController:
         agent.yaw = (agent.yaw - dx * k) % 360.0
         agent.pitch = max(-89.0, min(89.0, agent.pitch - dy * k))
 
+    def fly_camera(self, dt):
+        if not (self.enabled and self.captured and self.viewer.god):
+            return
+        down = self.mw.isButtonDown
+        kb = self.kb
+        forward = float(down(kb["w"])) - float(down(kb["s"]))
+        right = float(down(kb["d"])) - float(down(kb["a"]))
+        up = float(down(kb["q"])) - float(down(kb["e"]))
+        self.viewer.fly_move(dt, forward, right, up, down(KeyboardButton.shift()))
+
     def read_input(self) -> Action:
         act = Action()
         if not (self.enabled and self.captured):
+            return act
+        if not self.viewer.world.agents[self.viewer.owner].alive:
             return act
         down = self.mw.isButtonDown
         kb = self.kb
@@ -321,7 +380,7 @@ class PlayerController:
             a = self.agent
             if a.busy is not None or a.view_mode:
                 self.f_pending = 0
-            elif self.f_pending == 0 and a.alive:
+            elif self.f_pending == 0 and a.alive and not self.viewer.spectate_active():
                 self.viewer.inspect()
 
     def update_fps(self, dt: float = 0.0):
@@ -354,17 +413,19 @@ class LocalSession:
 
     def __init__(self, viewer: Viewer, settings, team_size=4, difficulty="normal", team=0, primary="ak47",
                  kill_limit=60, time_limit=420.0, seed=None, autoplay=False, host=None, on_escape=None,
-                 map_name="transport_ship", mode=None, mode_params=None):
+                 map_name="transport_ship", mode=None, mode_params=None, spectate=False):
         rng = random.Random(seed)
         primaries = [random_primary(rng) for _ in range(2 * team_size)]
         self.player = team * team_size
-        primaries[self.player] = primary
-        map_name = map_name if map_name in MAPS else "transport_ship"
-        mode = mode if mode in MAPS[map_name][2] else default_mode(map_name)
+        self.spectate = spectate
+        if not spectate:
+            primaries[self.player] = primary
+        map_name, mode = resolve_map_mode(map_name, mode)
         self.world = w = World(MatchConfig(team_size=team_size, kill_limit=kill_limit, time_limit=time_limit,
                                            primaries=primaries, seed=seed, map_name=map_name, mode=mode,
                                            mode_params=dict(mode_params or {})))
-        w.agents[self.player].name = settings.name[:16] or w.agents[self.player].name
+        if not spectate:
+            w.agents[self.player].name = settings.name[:16] or w.agents[self.player].name
         self.default_names = {a.id: f"{TEAM_NAMES[a.team]}-{a.id % team_size}" for a in w.agents}
         self.viewer = viewer
         self.settings = settings
@@ -372,14 +433,18 @@ class LocalSession:
         self.autoplay = autoplay
         self.seed = seed
         self.bots = {a.id: Bot(w, a.id, difficulty, seed=(seed or 0) * 97 + a.id)
-                     for a in w.agents if a.id != self.player or autoplay}
+                     for a in w.agents if a.id != self.player or autoplay or spectate}
         viewer.bind(w, self.player)
         viewer.set_local_skins(settings.skins)
         viewer.set_cinematic(False)
-        round_mode = not w.mode.free_weapons
-        self.ctrl = PlayerController(viewer, settings, on_escape=on_escape, on_primary=self._set_primary,
+        if spectate:
+            viewer.start_watch()
+        round_mode = not w.mode.free_weapons and not spectate
+        self.ctrl = PlayerController(viewer, settings, on_escape=on_escape,
+                                     on_primary=None if spectate else self._set_primary,
                                      on_restart=self.restart, on_buy=self._buy if round_mode else None,
-                                     on_operator=self._operator if round_mode else None)
+                                     on_operator=self._operator if round_mode else None,
+                                     on_loadout=None if round_mode else self._loadout, watch=spectate)
         self.acc = 0.0
         self.done_at = None
         self.server = None
@@ -411,6 +476,9 @@ class LocalSession:
     def _set_primary(self, name):
         return self.world.set_primary(self.world.agents[self.player], name)
 
+    def _loadout(self, key):
+        return self.world.set_loadout(self.world.agents[self.player], key)
+
     def _buy(self, name):
         return self.world.buy(self.world.agents[self.player], name)
 
@@ -420,7 +488,7 @@ class LocalSession:
             m.choose_operator(self.world.agents[self.player], name, primary)
 
     def _human_ids(self):
-        ids = {self.player} if not self.autoplay else set()
+        ids = {self.player} if not self.autoplay and not self.spectate else set()
         if self.server:
             ids |= {c.aid for c in self.server.players()}
         return ids
@@ -536,6 +604,8 @@ class LocalSession:
         for aid, skins in self.skins.items():
             self.viewer.agent_skins[aid] = skins
         self.viewer.agent_skins[self.player] = self.viewer.local_skins
+        if self.spectate:
+            self.viewer.start_watch()
         self.acc = 0.0
         if self.server is not None:
             self.server.broadcast({"t": "reset"})
@@ -543,10 +613,18 @@ class LocalSession:
     def update(self, dt):
         w = self.world
         me = w.agents[self.player]
-        self.ctrl.mouse_look(me, self.autoplay)
         if self.server is not None:
             self._net_events()
-        human = None if self.autoplay else self.ctrl.read_input()
+        # solo Esc freezes the match; a LAN host keeps simulating so nobody can pause the room
+        if self.server is None and not self.autoplay and not self.ctrl.enabled:
+            self.acc = 0.0
+            self.viewer.sync(dt, 0.0)
+            self.ctrl.update_fps(dt)
+            return
+        self.ctrl.mouse_look(me, self.autoplay)
+        if self.spectate:
+            self.ctrl.fly_camera(dt)
+        human = None if self.autoplay or self.spectate else self.ctrl.read_input()
         self.acc += dt
         steps = 0
         while self.acc >= w.dt and steps < 6:
@@ -580,6 +658,16 @@ class LocalSession:
             self.server = None
 
 
+def predicted_motion(agent, act: Action) -> Action:
+    """Movement the client may predict. Matches the host: a frozen or busy body only crouches,
+    and a drone / camera leaves the body where it is."""
+    if agent.view_mode:
+        return IDLE
+    if agent.frozen or agent.busy is not None:
+        return Action(crouch=act.crouch) if act.crouch else IDLE
+    return act
+
+
 # ----------------------------------------------------------------------------- LAN client
 class ClientSession:
     INTERP = 0.05  # remote players are shown this far in the past (seconds)
@@ -593,8 +681,7 @@ class ClientSession:
         self.on_disconnect = on_disconnect
         self.aid = int(wel["aid"])
         self.room = wel.get("room", "")
-        map_name = cfg["map_name"] if cfg.get("map_name") in MAPS else "transport_ship"
-        mode = cfg.get("mode") if cfg.get("mode") in MAPS[map_name][2] else default_mode(map_name)
+        map_name, mode = resolve_map_mode(cfg.get("map_name"), cfg.get("mode"))
         params = cfg.get("mode_params") if isinstance(cfg.get("mode_params"), dict) else {}
         self.world = w = World(MatchConfig(team_size=cfg["team_size"], kill_limit=cfg["kill_limit"],
                                            time_limit=cfg["time_limit"], respawn=cfg["respawn"],
@@ -616,8 +703,9 @@ class ClientSession:
         round_mode = not w.mode.free_weapons
         self.ctrl = PlayerController(viewer, settings, on_escape=on_escape, on_primary=self._set_primary,
                                      on_buy=self._buy if round_mode else None,
-                                     on_operator=self._operator if round_mode else None)
-        if getattr(settings, "primary", None) in PRIMARY_CHOICES:
+                                     on_operator=self._operator if round_mode else None,
+                                     on_loadout=None if round_mode else self._loadout)
+        if w.mode.free_weapons and getattr(settings, "primary", None) in PRIMARY_CHOICES:
             client.send({"t": "cmd", "c": "primary", "v": settings.primary})
         self.seq = 0
         self.pending: collections.deque = collections.deque()
@@ -636,6 +724,11 @@ class ClientSession:
 
     def _set_primary(self, name):
         self.client.send({"t": "cmd", "c": "primary", "v": name})
+        a = self.world.agents[self.aid]
+        return a.alive and self.world.time - a.spawn_time < 6.0
+
+    def _loadout(self, key):
+        self.client.send({"t": "cmd", "c": "loadout", "v": key})
         a = self.world.agents[self.aid]
         return a.alive and self.world.time - a.spawn_time < 6.0
 
@@ -692,7 +785,7 @@ class ClientSession:
             for k, (_, act, yaw) in enumerate(self.pending):
                 w.time = t + k * w.dt
                 me.yaw = yaw
-                w._move(me, act, w.dt)
+                w._move(me, predicted_motion(me, act), w.dt)
             w.muted = False
             me.yaw, w.time = yaw_now, t_save
 
@@ -764,7 +857,7 @@ class ClientSession:
                 w.time = self.snap_time + len(self.pending) * w.dt
                 me.prev_pos[:] = me.pos
                 w.muted = True
-                w._move(me, act, w.dt)
+                w._move(me, predicted_motion(me, act), w.dt)
                 w.muted = False
                 w.time = t_save
                 self.pending.append((self.seq, copy.copy(act), me.yaw))
@@ -792,9 +885,9 @@ class GameApp:
     def __init__(self, team_size=4, difficulty="normal", primary="ak47", kill_limit=60, time_limit=420.0,
                  size=(1600, 900), fullscreen=False, vsync=True, shadows=True, msaa=4, sensitivity=1.6,
                  autoplay=False, seed=None, screenshot=None, shot_time=6.0, team=0, settings=None,
-                 host=None, map_name="transport_ship", mode=None, mode_params=None):
+                 host=None, map_name="transport_ship", mode=None, mode_params=None, spectate=False):
         self.settings = settings or _Settings(sensitivity=sensitivity)
-        mode = mode if mode in MAPS[map_name][2] else default_mode(map_name)
+        map_name, mode = resolve_map_mode(map_name, mode)
         world = World(MatchConfig(team_size=team_size, map_name=map_name, mode=mode))
         self.viewer = Viewer(world, pov=0, onscreen=True, size=size, shadows=shadows, vsync=vsync, msaa=msaa,
                              fullscreen=fullscreen, title=f"FPS-RL  |  {MAPS[map_name][1]}")
@@ -803,7 +896,7 @@ class GameApp:
         self.base.ignore("v")
         self.session = LocalSession(self.viewer, self.settings, team_size, difficulty, team, primary, kill_limit,
                                     time_limit, seed, autoplay, host=host, map_name=map_name, mode=mode,
-                                    mode_params=mode_params)
+                                    mode_params=mode_params, spectate=spectate)
         self.world = self.session.world
         self.screenshot = screenshot
         self.shot_time = shot_time

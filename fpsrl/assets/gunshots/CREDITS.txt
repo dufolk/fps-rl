@@ -1,0 +1,19 @@
+Real gunshot recordings
+=======================
+
+Source: "Gunshot Sounds" by Tabasco
+https://opengameart.org/content/gunshot-sounds
+
+License: CC0 1.0 (public domain dedication)
+https://creativecommons.org/publicdomain/zero/1.0/
+
+The source archive contains field recordings of a CZ-52 pistol, SKS rifle,
+Mosin-Nagant rifle, and shotgun. The files in this directory are trimmed,
+downmixed mono excerpts:
+
+- pistol_real.wav  <- cz.wav
+- rifle_real.wav   <- sks.wav
+- sniper_real.wav  <- mosin.wav
+- shotgun_real.wav <- shotty.wav
+
+No attribution is required by CC0; this file is retained for provenance.

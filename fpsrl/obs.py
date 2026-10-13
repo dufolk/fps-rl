@@ -7,14 +7,14 @@ import numpy as np
 
 from . import config as C
 from .sim import Agent, World, angles_to, wrap180
-from .weapons import NUM_SLOTS, SLOT_FRAG, SLOT_SMOKE
+from .weapons import NUM_SLOTS, SLOT_FIRE, SLOT_FLASH, SLOT_FRAG, SLOT_SMOKE
 
 SELF_FEATURES = [
     "alive", "hp", "pos_x", "pos_y", "pos_z", "vel_fwd", "vel_right", "vel_up",
     "yaw_sin", "yaw_cos", "pitch", "on_ground", "crouch",
     *[f"slot_{i}" for i in range(1, NUM_SLOTS + 1)],
     *[f"has_{i}" for i in range(1, NUM_SLOTS + 1)],
-    "mag", "reserve", "reloading", "ads", "ready", "frags", "smokes",
+    "mag", "reserve", "reloading", "ads", "ready", "frags", "smokes", "flashes", "molotovs",
     "punch_pitch", "punch_yaw", "spread", "protected",
     "dmg_dir_fwd", "dmg_dir_right", "dmg_recency", "time_left", "score_diff",
     "lean", "busy", "frozen", "armor", "money", "view_mode",
@@ -66,7 +66,7 @@ class ObsBuilder:
         m = w.mode
         score = w.score
         if m.name == "dom":
-            lim = m.p["score_limit"]
+            lim = m.p["wins_needed"]
         elif hasattr(m, "win_target"):
             lim = m.win_target
         else:
@@ -97,6 +97,7 @@ class ObsBuilder:
         df, dr = self._local(a, a.last_damage_dir)
         dn = math.hypot(df, dr) or 1.0
         frag, smoke = a.inv.get(SLOT_FRAG), a.inv.get(SLOT_SMOKE)
+        flash, fire = a.inv.get(SLOT_FLASH), a.inv.get(SLOT_FIRE)
         px, py = (a.pos[:2] - self.center) / self.half
         feats = [
             float(a.alive), a.hp / C.MAX_HP, px, py, a.pos[2] / 5.0,
@@ -109,6 +110,8 @@ class ObsBuilder:
             float(w.time >= a.ready_at),
             float(frag.mag) if frag is not None and frag.spec.kind == "grenade" else 0.0,
             float(smoke.mag) if smoke is not None and smoke.spec.kind == "grenade" else 0.0,
+            float(flash.mag) if flash is not None and flash.spec.kind == "grenade" else 0.0,
+            float(fire.mag) if fire is not None and fire.spec.kind == "grenade" else 0.0,
             a.punch[0] / 10.0, a.punch[1] / 10.0, w.current_spread(a) / 10.0, float(w.time < a.protect_until),
             df / dn if dmg_age < 2.0 else 0.0, dr / dn if dmg_age < 2.0 else 0.0,
             max(0.0, 1.0 - dmg_age / 2.0), self._time_left(), self._score_diff(a),
@@ -161,7 +164,8 @@ class ObsBuilder:
             rel = p.pos - a.pos
             lx, ly = self._local(a, rel)
             out[k:k + len(PROJ_FEATURES)] = [1.0, lx / 20.0, ly / 20.0, rel[2] / 5.0,
-                                             float(p.kind == "frag"), max(0.0, p.explode_at - w.time) / 3.0]
+                                             float(p.kind in ("frag", "molotov")),
+                                             max(0.0, p.explode_at - w.time) / 3.0]
             k += len(PROJ_FEATURES)
         k = self.size - OBJECTIVE_SIZE
         out[k:] = w.mode.obs(a)

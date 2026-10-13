@@ -14,10 +14,10 @@ import struct
 
 import numpy as np
 
-from ..sim import Action, Projectile, Smoke, WeaponState
+from ..sim import Action, Fire, Projectile, Smoke, WeaponState
 from ..weapons import NUM_SLOTS, PRIMARY_CHOICES, WEAPONS
 
-VERSION = 2
+VERSION = 3
 DEFAULT_PORT = 47777
 DISCOVERY_PORT = 47778
 DISCOVER_MAGIC = b"FPSRL-DISCOVER-1"
@@ -111,13 +111,16 @@ def input_to_action(inp: dict, agent) -> Action:
 
 
 def apply_client_cmd(world, agent, msg: dict) -> bool:
-    """Host side of a client {"t": "cmd"} message: primary pick, buy, operator pick."""
+    """Host side of a client {"t": "cmd"} message: primary / loadout pick, buy, operator pick."""
     c = msg.get("c")
     v = msg.get("v")
     if not isinstance(v, str):
         return False
     if c == "primary" and v in PRIMARY_CHOICES:
         world.set_primary(agent, v)
+        return True
+    if c == "loadout":
+        world.set_loadout(agent, v)
         return True
     if c == "buy":
         return world.buy(agent, v)
@@ -142,17 +145,18 @@ def agent_state(a) -> list:
             _r(a.reload_until), _r(a.ready_at), _r(a.next_fire), _r(a.protect_until), _r(a.spawn_time),
             _r(a.punch[0]), _r(a.punch[1]), _r(a.bloom), a.kills, a.deaths, a.headshots, a.killer,
             _r(a.respawn_at, 2), _r(a.death_time), _r(a.next_jump), a.primary, _r(a.throw_at), _r(a.step_dist),
-            [_r(a.lean, 2), _r(a.lean_off), int(a.money), _r(a.armor, 2), busy, _r(a.flash_until), _r(a.flash_t0),
+            [_r(a.lean, 2), _r(a.lean_off), int(a.money), _r(a.armor, 2), bool(a.helmet),
+             busy, _r(a.flash_until), _r(a.flash_t0),
              a.view_mode, a.view_ref, a.operator, _r(a.spotted_until), a.loadout.get("primary"),
-             a.loadout.get("secondary")]]
+             a.loadout.get("secondary"), _r(a.cook_until)]]
 
 
 def apply_agent(a, s, movement: bool = True, look: bool = True):
     (pos, vel, yaw, pitch, height, flags, hp, slot, last_slot, inv, reload_until, ready_at, next_fire,
      protect_until, spawn_time, p0, p1, bloom, kills, deaths, hs, killer, respawn_at, death_time, next_jump,
      primary, throw_at, step_dist, ext) = s
-    (lean, lean_off, money, armor, busy, flash_until, flash_t0, view_mode, view_ref, operator, spotted,
-     lo_primary, lo_secondary) = ext
+    (lean, lean_off, money, armor, helmet, busy, flash_until, flash_t0, view_mode, view_ref, operator, spotted,
+     lo_primary, lo_secondary, cook_until) = ext
     if movement:
         a.pos[:] = pos
         a.vel[:] = vel
@@ -181,7 +185,7 @@ def apply_agent(a, s, movement: bool = True, look: bool = True):
         del a.inv[k]
     if movement or look:
         a.lean, a.lean_off = lean, lean_off
-    a.money, a.armor = money, armor
+    a.money, a.armor, a.helmet = money, armor, helmet
     a.busy = None if busy is None else (busy[0], busy[1], busy[2], None)
     a.flash_until, a.flash_t0 = flash_until, flash_t0
     a.view_mode, a.view_ref, a.operator, a.spotted_until = view_mode, view_ref, operator, spotted
@@ -194,7 +198,7 @@ def apply_agent(a, s, movement: bool = True, look: bool = True):
     a.bloom = bloom
     a.kills, a.deaths, a.headshots, a.killer = kills, deaths, hs, killer
     a.respawn_at, a.death_time = respawn_at, death_time
-    a.primary, a.throw_at = primary, throw_at
+    a.primary, a.throw_at, a.cook_until = primary, throw_at, cook_until
 
 
 def world_state(world, destruct_version=None) -> dict:
@@ -206,6 +210,8 @@ def world_state(world, destruct_version=None) -> dict:
         "agents": [agent_state(a) for a in world.agents],
         "proj": [[p.id, p.kind, [_r(v) for v in p.pos], [_r(v) for v in p.vel]] for p in world.projectiles],
         "smokes": [[s.id, [_r(v) for v in s.pos], _r(s.t0), _r(s.t1), _r(s.max_radius)] for s in world.smokes],
+        "fires": [[f.id, [_r(v) for v in f.pos], _r(f.t0), _r(f.t1), _r(f.radius), f.owner, f.weapon, _r(f.dps)]
+                  for f in world.fires],
         "mode": world.mode.state(),
         "gadgets": world.gadgets.state(),
     }
@@ -234,3 +240,5 @@ def apply_world(world, st: dict, own: int | None = None):
                                 0.0, 0.0))
     world.projectiles = projs
     world.smokes = [Smoke(sid, np.array(pos, dtype=np.float64), t0, t1, r) for sid, pos, t0, t1, r in st["smokes"]]
+    world.fires = [Fire(fid, np.array(pos, dtype=np.float64), t0, t1, rad, owner, weapon, dps)
+                   for fid, pos, t0, t1, rad, owner, weapon, dps in st.get("fires", ())]

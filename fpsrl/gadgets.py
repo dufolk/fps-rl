@@ -77,6 +77,8 @@ class Gadgets:
         for a in self.w.agents:
             if a.view_ref == gid:
                 self.exit_view(a)
+                if self._view_locked(a):
+                    self.toggle_view(a)  # re-enter another drone already out; prep does not deploy a spare
         if it["kind"] in BOX_KINDS:
             self._rebuild()
             self.w.geometry_changed()
@@ -238,6 +240,7 @@ class Gadgets:
     def _take_armor(self, a, it):
         it["charges"] -= 1
         a.armor = 0.2
+        a.helmet = False
         self.w._emit("armor", agent=a.id)
         if it["charges"] <= 0:
             self._remove(it["id"], "empty")
@@ -365,9 +368,15 @@ class Gadgets:
                       fuse_at=self.w.time + WEAPONS["ash_round"].fuse, normal=[0, 0, 1])
 
     # ------------------------------------------------------------------ views
+    def _view_locked(self, a) -> bool:
+        locked = getattr(self.w.mode, "view_locked", None)
+        return locked is not None and locked(a)
+
     def toggle_view(self, a):
         w = self.w
         if a.view_mode:
+            if self._view_locked(a):
+                return  # prep drone stays up; the spare waits until the round is live
             self.exit_view(a)
             return
         m = w.mode
@@ -378,7 +387,7 @@ class Gadgets:
             mine = [it for it in self.items.values() if it["kind"] == "drone" and it["owner"] == a.id]
             if mine:
                 it = mine[0]
-            elif a.alive and self.drones_left.get(a.id, 0) > 0:
+            elif a.alive and self.drones_left.get(a.id, 0) > 0 and not self._prep_spare_held(a):
                 self.drones_left[a.id] -= 1
                 d = _dir(a.yaw)
                 p = a.pos + np.array([d[0] * 0.5, d[1] * 0.5, 0.05])
@@ -400,6 +409,13 @@ class Gadgets:
 
     def cameras(self, team):
         return [it for it in self.items.values() if it["kind"] == "camera" and it["team"] == team]
+
+    def _prep_spare_held(self, a) -> bool:
+        """Prep allows the single drone placed at round start. The spare stays pocketed."""
+        if not self._view_locked(a):
+            return False
+        per = self.w.mode.p.get("drones_per_player", 1)
+        return self.drones_left.get(a.id, 0) < per
 
     def exit_view(self, a):
         if a.view_mode:

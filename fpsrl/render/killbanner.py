@@ -167,7 +167,7 @@ class KillBanner:
 
     def on_kill(self, weapon: str, headshot: bool, victim_name: str):
         self.streak += 1
-        kind = "knife" if weapon == "knife" else "grenade" if weapon == "frag" else \
+        kind = "knife" if weapon == "knife" else "grenade" if weapon in ("frag", "molotov") else \
             "headshot" if headshot else "kill"
         self.kind = kind
         self.t = 0.0

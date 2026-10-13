@@ -58,6 +58,11 @@ SKINS: dict[str, list[Skin]] = {
         Skin("carbon", "碳纤维", "Carbon Fiber", 2, "carbon", ("poly", "metal"), {}, ((0.6, 0.6, 0.65), 50.0), 22.0),
         _gold(),
     ],
+    "glock": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("fade", "渐变之色", "Fade", 2, "fade", ("poly",), {}, ((0.8, 0.8, 0.85), 40.0), 8.0),
+        _gold(12.0),
+    ],
     "deagle": [
         Skin("default", "原厂", "Factory New"),
         Skin("blaze", "猛虎", "Tiger Blaze", 2, "blaze", ("chrome",), {}, ((0.9, 0.7, 0.5), 50.0), 7.0),
@@ -123,8 +128,14 @@ SKINS: dict[str, list[Skin]] = {
         Skin("arctic", "极地迷彩", "Arctic Camo", 1, "arctic", ("metal", "poly"), {}, None, 6.0),
         _gold(),
     ],
+    "nova": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("blaze", "猛虎", "Tiger Blaze", 2, "blaze", ("wood",), {}, ((0.9, 0.7, 0.5), 50.0), 7.0),
+        _gold(),
+    ],
 }
-SKIN_WEAPONS = ("ak47", "m4a4", "m4a1", "famas", "mp5", "mp9", "uzi", "awm", "scar20", "m249", "deagle",
+SKIN_WEAPONS = ("ak47", "m4a4", "m4a1", "famas", "mp5", "mp9", "uzi", "awm", "scar20", "m249", "nova", "glock",
+                "deagle",
                 "dualies", "knife", "frag")
 
 

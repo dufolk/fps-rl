@@ -1,5 +1,5 @@
 """Siege operators: two primaries from the shared arsenal, a secondary, a unique gadget
-(slot 6) and generic gadgets (slots 4 / 5)."""
+(slot 6) and generic gadgets (each in its own slot)."""
 from __future__ import annotations
 
 from dataclasses import dataclass

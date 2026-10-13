@@ -12,9 +12,10 @@ from panda3d.core import (CardMaker, CullFaceAttrib, Filename, NodePath, Point3,
 
 from ..geometry import poly_center
 from ..sim import LEAN_DIST, LEAN_ROLL, TEAM_NAMES
-from ..weapons import NUM_SLOTS, WEAPONS
+from ..weapons import NUM_SLOTS, WEAPONS, item_name
 
 TEAM_COLORS = {0: (1.0, 0.55, 0.3, 1), 1: (0.45, 0.75, 1.0, 1)}
+DOM_COLORS = {0: (1.0, 0.3, 0.26, 1), 1: (0.3, 0.6, 1.0, 1)}  # domination: red side / blue side
 CROSS_COLOR = (0.35, 1.0, 0.45, 0.95)
 
 
@@ -113,9 +114,9 @@ class HUD:
         self.reserve_text = text("/ 90", (-0.36, 0.085), 0.05, (0.8, 0.8, 0.8, 1), TextNode.ALeft,
                                  parent=self.ammo_panel)
         self.weapon_text = text("AK-47", (-0.07, 0.19), 0.042, (1, 0.9, 0.6, 1), TextNode.ARight,
-                                parent=self.ammo_panel)
+                                parent=self.ammo_panel, font=self.font_cjk)
         self.nade_text = text("", (-0.07, 0.055), 0.034, (0.85, 0.85, 0.85, 1), TextNode.ARight,
-                              parent=self.ammo_panel)
+                              parent=self.ammo_panel, font=self.font_cjk)
         # score
         top = base.a2dTopCenter
         self.score_panel = top.attachNewNode("score")
@@ -152,8 +153,9 @@ class HUD:
         # damage arcs
         self.arcs = []
         for _ in range(4):
-            img = OnscreenImage(textures.sprite("damage_arc"), pos=(0, 0, 0), scale=0.42, parent=self.root)
+            img = OnscreenImage(textures.sprite("damage_arc"), pos=(0, 0, 0), scale=0.92, parent=self.root)
             img.setTransparency(TransparencyAttrib.M_alpha)
+            img.setBin("fixed", 40)
             img.hide()
             self.arcs.append([img, 0.0, 0.0])
         self.arc_idx = 0
@@ -166,6 +168,11 @@ class HUD:
         self.hurt.setTransparency(TransparencyAttrib.M_alpha)
         self.hurt.setColorScale(0.8, 0.0, 0.0, 0.0)
         self.hurt_level = 0.0
+        # low-health rim: a frame, transparent across the middle of the screen
+        self.bleed = OnscreenImage(textures.sprite("edge"), scale=(2.0, 1, 1.0), parent=base.render2d)
+        self.bleed.setTransparency(TransparencyAttrib.M_alpha)
+        self.bleed.setScale(1, 1, 1)
+        self.bleed.setColorScale(1, 1, 1, 0)
         # scope
         self.scope = NodePath("scope")
         self.scope.reparentTo(base.aspect2d, -100)
@@ -188,17 +195,29 @@ class HUD:
         self.board.hide()
         self.flash_white = 0.0
         self.end_hint = "按 F5 重新开始" if self.cjk else "Press F5 to restart"
-        # objectives (under the score panel)
+        # domination bar (replaces the score panel): match score as squares, open point's score
         cf = self.font_cjk or f
         self.obj_root = top.attachNewNode("objectives")
-        self.obj_cells = []
-        for i in range(3):
-            x = (i - 1) * 0.13
-            bg = _rect(self.obj_root, (0.1, 0.1, 0.1, 0.6), x - 0.05, x + 0.05, -0.25, -0.15)
-            fill = _rect(self.obj_root, (1, 1, 1, 0.8), 0.0, 0.1, 0.0, 0.1)
-            fill.setPos(x - 0.05, 0, -0.25)
-            label = text("ABC"[i], (x, -0.218), 0.05, parent=self.obj_root)
-            self.obj_cells.append((bg, fill, label))
+        red, blue = DOM_COLORS[0], DOM_COLORS[1]
+        _rect(self.obj_root, (0, 0, 0, 0.45), -0.4, 0.4, -0.15, -0.02)
+        self.dom_wins = {0: [], 1: []}
+        for team, sign in ((0, -1), (1, 1)):
+            col = DOM_COLORS[team]
+            for k in range(2):
+                x = sign * (0.25 + 0.065 * k)
+                _rect(self.obj_root, (0.05, 0.05, 0.05, 0.85), x - 0.026, x + 0.026, -0.112, -0.06)
+                cell = _rect(self.obj_root, col, x - 0.021, x + 0.021, -0.107, -0.065)
+                self.dom_wins[team].append(cell)
+            label = ("红方", "RED") if team == 0 else ("蓝方", "BLUE")
+            text(label[0] if self.cjk else label[1], (sign * 0.282, -0.137), 0.028, col, parent=self.obj_root, font=cf)
+        self.dom_cap = (text("0", (-0.07, -0.1), 0.075, red, TextNode.ACenter, parent=self.obj_root),
+                        text("0", (0.07, -0.1), 0.075, blue, TextNode.ACenter, parent=self.obj_root))
+        self.dom_colon = text(":", (0, -0.098), 0.065, parent=self.obj_root)
+        _rect(self.obj_root, (0.15, 0.15, 0.15, 0.85), -0.18, 0.18, -0.138, -0.124)
+        self.dom_bar = (_rect(self.obj_root, red, -0.18, 0.0, -0.137, -0.125),
+                        _rect(self.obj_root, blue, 0.0, 0.18, -0.137, -0.125))
+        self.dom_point = text("", (0, -0.19), 0.04, (1, 1, 1, 0.95), parent=self.obj_root, font=cf)
+        self.dom_info = text("", (0, -0.24), 0.036, (1, 0.9, 0.55, 1), parent=self.obj_root, font=cf)
         self.obj_root.hide()
         self.phase_text = text("", (0, -0.2), 0.04, (1, 0.9, 0.55, 1), parent=self.score_panel, font=cf)
         self.money_text = text("", (0.06, 0.24), 0.05, (0.45, 1.0, 0.5, 1), TextNode.ALeft, parent=self.hp_panel)
@@ -237,6 +256,24 @@ class HUD:
         # flashbang
         self.flash_card = _rect(base.render2d, (1, 1, 1, 1), -1, 1, -1, 1, "flash_card")
         self.flash_card.setColorScale(1, 1, 1, 0)
+        self.watch = False
+        self.god_view = False
+
+    def clear_transient(self):
+        """Forget hit feedback, kill feed and banners from the previous world (e.g. the menu match)."""
+        for slot in self.arcs:
+            slot[1] = 0.0
+            slot[0].hide()
+        self.hurt_level = 0.0
+        self.hurt.setColorScale(0.8, 0.0, 0.0, 0.0)
+        self.bleed.setColorScale(1, 1, 1, 0)
+        self.hit_t = 0.0
+        self.hit_kill = False
+        self.kill_fx = None
+        self.feed = []
+        self.round_t = 0.0
+        self.banner.reset_streak()
+        self.hide_inspect()
 
     def show_round(self, title, sub="", duration=3.5, color=(1, 1, 1, 1)):
         self.round_text.setText(title)
@@ -248,7 +285,7 @@ class HUD:
     def on_event(self, e, world):
         t = e["type"]
         me = self.local_id
-        if t == "damage":
+        if t == "damage" and not self.watch:
             if e["attacker"] == me and e["victim"] != me:
                 self.hit_t = 0.22
                 self.hit_kill = False
@@ -258,7 +295,7 @@ class HUD:
                 dx, dy = att.pos[0] - v.pos[0], att.pos[1] - v.pos[1]
                 slot = self.arcs[self.arc_idx]
                 self.arc_idx = (self.arc_idx + 1) % len(self.arcs)
-                slot[1] = 1.2
+                slot[1] = 1.6
                 slot[2] = math.degrees(math.atan2(dy, dx))
                 self.hurt_level = min(1.0, self.hurt_level + e["amount"] / 60.0)
             elif e["victim"] == me:
@@ -266,19 +303,19 @@ class HUD:
         elif t == "kill":
             a = world.agents[e["attacker"]].name if e["attacker"] >= 0 else "world"
             v = world.agents[e["victim"]].name
-            w = WEAPONS[e["weapon"]].display if e["weapon"] in WEAPONS else e["weapon"]
+            w = item_name(e["weapon"], self.cjk)
             hs = "  [HS]" if e["headshot"] else ""
             col = TEAM_COLORS[world.agents[e["attacker"]].team] if e["attacker"] >= 0 else (1, 1, 1, 1)
-            if e["attacker"] == me or e["victim"] == me:
+            if not self.watch and (e["attacker"] == me or e["victim"] == me):
                 col = (1, 1, 0.5, 1)
             self.feed.insert(0, [f"{a}  [{w}]{hs}  {v}", col, 6.0])
             self.feed = self.feed[:6]
-            if e["attacker"] == me and e["victim"] != me:
+            if not self.watch and e["attacker"] == me and e["victim"] != me:
                 self.hit_t = 0.4
                 self.hit_kill = True
                 if world.agents[e["victim"]].team != world.agents[me].team:
                     self.kill_fx = self.banner.on_kill(e["weapon"], e["headshot"], v)
-            if e["victim"] == me:
+            elif not self.watch and e["victim"] == me:
                 self.banner.reset_streak()
                 self.hide_inspect()
         elif t == "spawn" and e["agent"] == me:
@@ -293,6 +330,9 @@ class HUD:
         mode = world.mode
         if t == "round_start":
             n = e["round"]
+            if self.watch:
+                self.show_round(f"第 {n} 回合" if zh else f"ROUND {n}", "", 3.0)
+                return
             side = mode.side(me.team)
             if mode.name == "r6":
                 role = ("进攻方" if side == 0 else "防守方") if zh else ("ATTACK" if side == 0 else "DEFEND")
@@ -302,6 +342,20 @@ class HUD:
                 sub = ("B 键购买武器" if zh else "Press B to buy")
             self.show_round((f"第 {n} 回合" if zh else f"ROUND {n}"), f"{role}   ·   {sub}", 3.0)
         elif t == "round_end":
+            if self.watch:
+                reasons = {"elimination": ("全歼对方", "Elimination"), "time": ("时间耗尽", "Time ran out"),
+                           "bomb": ("目标已摧毁", "Target destroyed"), "defuse": ("炸弹已拆除", "Bomb defused"),
+                           "defuser": ("拆弹器已完成", "Defuser secured")}
+                r = reasons.get(e["reason"], (e["reason"], e["reason"]))
+                if e["team"] in (0, 1):
+                    name = TEAM_NAMES[e["team"]]
+                    title = f"{name} 拿下回合" if zh else f"{name} TAKES THE ROUND"
+                    col = TEAM_COLORS[e["team"]]
+                else:
+                    title = "平局" if zh else "DRAW"
+                    col = (1, 1, 1, 1)
+                self.show_round(title, r[0] if zh else r[1], 4.0, col)
+                return
             won = e["team"] == me.team
             reasons = {"elimination": ("全歼敌人", "Enemies eliminated"), "time": ("时间耗尽", "Time ran out"),
                        "bomb": ("目标已摧毁", "Target destroyed"), "defuse": ("炸弹已拆除", "Bomb defused"),
@@ -317,12 +371,22 @@ class HUD:
             self.show_round("交换攻守" if zh else "SWITCHING SIDES", "", 3.0)
         elif t == "overtime":
             self.show_round("加时赛" if zh else "OVERTIME", "", 3.0)
+        elif t == "point_active":
+            name = e.get("name", "?")
+            self.show_round(f"{name} 点已激活" if zh else f"POINT {name} IS LIVE",
+                            "前往占领" if zh else "Go capture it", 2.0, (1, 0.9, 0.55, 1))
         elif t == "point_captured":
             name = e.get("name", "?")
-            ours = e["team"] == me.team
-            msg = (f"已占领 {name} 点" if ours else f"{name} 点失守") if zh else \
-                (f"Captured {name}" if ours else f"Lost {name}")
-            self.show_round(msg, "", 1.8, (0.5, 1, 0.55, 1) if ours else (1, 0.45, 0.4, 1))
+            c0, c1 = e.get("cap", (0, 0))
+            w0, w1 = e.get("wins", (0, 0))
+            sub = f"{c0} : {c1}    总比分 {w0} : {w1}" if zh else f"{c0} : {c1}    MATCH {w0} : {w1}"
+            if e["team"] < 0:
+                self.show_round(f"{name} 点平局" if zh else f"POINT {name} DRAWN", sub, 2.5, (0.9, 0.9, 0.9, 1))
+            else:
+                ours = e["team"] == me.team
+                msg = (f"已占领 {name} 点" if ours else f"{name} 点失守") if zh else \
+                    (f"Captured {name}" if ours else f"Lost {name}")
+                self.show_round(msg, sub, 2.5, (0.5, 1, 0.55, 1) if ours else (1, 0.45, 0.4, 1))
         elif t == "hint" and e["agent"] == self.local_id:
             hints = {"not_in_site": ("需在包点内安放", "Must be in a bomb site"),
                      "need_soft_wall": ("需对准可破坏墙体", "Aim at a breakable wall"),
@@ -374,6 +438,23 @@ class HUD:
         for x0, z0, x1, z1, half in arms:
             seg(*rot(x0, z0), *rot(x1, z1), half)
 
+    def _update_damage_arcs(self, dt, agent):
+        """Red wedge on the view rim. World angle 0 is +X; the wedge's top points at the shooter."""
+        if self.watch:
+            for slot in self.arcs:
+                slot[0].hide()
+            return
+        for slot in self.arcs:
+            img, life, ang = slot
+            if life <= 0:
+                img.hide()
+                continue
+            slot[1] -= dt
+            rel = (ang - agent.yaw + 180.0) % 360.0 - 180.0
+            img.setR(-rel)
+            img.setColorScale(1.6, 0.12, 0.08, min(1.0, slot[1]))
+            img.show()
+
     # ------------------------------------------------------------------ update
     def update(self, dt, world, agent, vfov_deg, show_board=False, scope_active=False, spectating=None,
                first_person=True):
@@ -384,6 +465,11 @@ class HUD:
             self.inspect_root.setAlphaScale(min(1.0, self.inspect_t / 0.4))
             if self.inspect_t <= 0:
                 self.inspect_root.hide()
+        self._update_damage_arcs(dt, agent)
+        if self.watch:
+            self.flash_card.setColorScale(1, 1, 1, 0)
+            self.hurt.setColorScale(0.8, 0.0, 0.0, 0.0)
+            self.bleed.setColorScale(1, 1, 1, 0)
         if agent.slot not in agent.inv:
             return
         self._update_mode(dt, world, agent)
@@ -439,7 +525,7 @@ class HUD:
         self.hp_bar.setColor(*col)
         self.protect_text.setText("PROTECTED" if now < agent.protect_until and agent.alive else "")
         ws = agent.weapon
-        self.weapon_text.setText(spec.display)
+        self.weapon_text.setText(item_name(spec.name, self.cjk))
         if spec.kind == "gun":
             self.ammo_text.setText(str(ws.mag))
             self.reserve_text.setText(f"/ {ws.reserve}")
@@ -467,7 +553,8 @@ class HUD:
             w = agent.inv.get(s)
             if w is not None:
                 n = f" x{w.mag}" if w.spec.kind in ("grenade", "gadget", "shield") else ""
-                items.append(f"[{s}] {w.spec.display.upper()}{n}")
+                label = item_name(w.name, self.cjk)
+                items.append(f"[{s}] {label if self.cjk else label.upper()}{n}")
         self.nade_text.setText("   ".join(items))
         score = world.score
         self.score_l.setText(str(score[0]))
@@ -497,23 +584,33 @@ class HUD:
                 tn.setFg((col[0], col[1], col[2], min(1.0, life)))
             else:
                 tn.setText("")
-        # damage arcs
-        for slot in self.arcs:
-            img, life, ang = slot
-            if life <= 0:
-                img.hide()
-                continue
-            slot[1] -= dt
-            rel = ang - agent.yaw
-            img.setR(-rel)
-            img.setColorScale(1, 1, 1, min(1.0, slot[1]))
-            img.show()
         self.hurt_level = max(0.0, self.hurt_level - dt * 0.8)
-        low_hp = 0.35 * max(0.0, 1.0 - agent.hp / 35.0) if agent.alive else 0.0
-        self.hurt.setColorScale(0.8, 0.0, 0.0, min(0.9, self.hurt_level * 0.7 + low_hp))
+        if self.watch:
+            self.hurt.setColorScale(0.8, 0.0, 0.0, 0.0)
+            self.bleed.setColorScale(1, 1, 1, 0)
+        else:
+            # domination keeps this card for the hit flash only; the steady low-HP red is the edge frame
+            low_hp = 0.0 if world.mode.name == "dom" else (
+                0.35 * max(0.0, 1.0 - agent.hp / 35.0) if agent.alive else 0.0)
+            self.hurt.setColorScale(0.8, 0.0, 0.0, min(0.9, self.hurt_level * 0.7 + low_hp))
+            rim = 0.0
+            if world.mode.name == "dom" and agent.alive:
+                rim = max(0.0, min(1.0, (60.0 - agent.hp) / 50.0))
+                # breathing lamp: fades out and back in; lower HP breathes deeper and a little faster
+                breath = 0.5 - 0.5 * math.cos(now * (1.7 + 1.6 * rim))
+                rim *= 0.15 + 0.85 * breath
+            self.bleed.setColorScale(1, 1, 1, rim)
         # death / spectate
         zh = self.cjk
-        if not agent.alive and not world.done:
+        if self.watch and not world.done:
+            self.center_text.setText("")
+            self.sub_text.setText("")
+        elif spectating is not None and spectating.alive:
+            who = spectating.name
+            self.center_text.setText("")
+            self.sub_text.setText(f"观战 {who}    左键/右键切换    F3 切换人称" if zh else
+                                  f"Spectating {who}    LMB/RMB cycle    F3 camera")
+        elif not agent.alive and not world.done:
             killer = world.agents[agent.killer].name if agent.killer >= 0 else ("环境" if zh else "the world")
             self.center_text.setText(f"被 {killer} 击杀" if zh else f"Killed by {killer}")
             left = max(0.0, agent.respawn_at - now)
@@ -560,24 +657,8 @@ class HUD:
             if self.round_t <= 0:
                 self.round_text.setText("")
                 self.round_sub.setText("")
-        # domination cells
         if mode.name == "dom" and mode.points:
-            self.obj_root.show()
-            for i, (bg, fill, label) in enumerate(self.obj_cells):
-                for n in (bg, fill, label):
-                    n.show() if i < len(mode.points) else n.hide()
-                if i >= len(mode.points):
-                    continue
-                label.setText(mode.points[i]["name"])
-                own = mode.owner[i]
-                prog = mode.progress[i]
-                k = abs(prog)
-                team = 0 if prog > 0 else 1
-                c = TEAM_COLORS[team]
-                fill.setColor(c[0], c[1], c[2], 0.85 if own >= 0 else 0.5)
-                fill.setSz(max(k, 0.001))
-                n0, n1 = mode.present[i]
-                bg.setColor(*(((0.9, 0.9, 0.2, 0.7) if n0 and n1 else (0.1, 0.1, 0.1, 0.6))))
+            self._update_dom(mode)
         else:
             self.obj_root.hide()
         # phase / economy
@@ -607,7 +688,9 @@ class HUD:
             from ..operators import OPERATORS
             o = OPERATORS.get(agent.operator)
             op = (o.zh if zh else o.name.upper()) if o else ""
-        self.armor_text.setText(" ".join(x for x in (op, ("护甲" if zh else "ARMOR") if agent.armor > 0 else "") if x))
+        armor = (("护甲+头盔" if agent.helmet else "护甲") if zh else
+                 ("ARMOR+HELMET" if agent.helmet else "ARMOR")) if agent.armor > 0 else ""
+        self.armor_text.setText(" ".join(x for x in (op, armor) if x))
         # hold action progress
         if agent.busy is not None:
             kind, t0, dur = agent.busy[0], agent.busy[1], agent.busy[2]
@@ -622,7 +705,7 @@ class HUD:
             self.busy_root.hide()
         # contextual prompt
         prompt = ""
-        if agent.alive and agent.busy is None and mode.name in ("bomb", "elim", "r6"):
+        if not self.watch and agent.alive and agent.busy is None and mode.name in ("bomb", "elim", "r6"):
             b = mode.bomb
             side = mode.side(agent.team)
             if b and b["state"] == "planted" and side == 1 and \
@@ -634,17 +717,37 @@ class HUD:
         self.prompt_text.setText(prompt)
         # gadget view overlay
         if agent.view_mode == 1:
-            self.view_text.setText("无人机 · WASD 移动 · 空格 跳 · 左键 标记 · G 返回" if zh else
-                                   "DRONE · WASD move · SPACE jump · LMB spot · G exit")
+            locked = getattr(world.mode, "view_locked", None)
+            if locked is not None and locked(agent):
+                tail = "准备阶段结束后返回本体" if zh else "body view after prep"
+            else:
+                tail = "G 返回" if zh else "G exit"
+            self.view_text.setText(("无人机 · WASD 移动 · 空格 跳 · 左键 标记 · " if zh else
+                                    "DRONE · WASD move · SPACE jump · LMB spot · ") + tail)
         elif agent.view_mode == 2:
             self.view_text.setText("摄像头 · 左键 标记 · 右键 下一个 · G 返回" if zh else
                                    "CAMERA · LMB spot · RMB next · G exit")
         else:
             self.view_text.setText("")
+        if self.watch:
+            if self.god_view:
+                self.view_text.setText("上帝视角   WASD 移动   鼠标转向   Q 上升  E 下降   Shift 加速   F 第一人称"
+                                       if zh else
+                                       "GOD VIEW   WASD move   mouse look   Q up  E down   SHIFT fast   F first person")
+                self.cross.hide()
+                self.scope.hide()
+                self.scope_cross.hide()
+                self.hp_panel.hide()
+                self.ammo_panel.hide()
+            else:
+                self.view_text.setText(f"第一人称  {agent.name}   左键/右键切换   F 上帝视角" if zh else
+                                       f"FIRST PERSON  {agent.name}   LMB/RMB cycle   F god view")
+                self.hp_panel.show()
+                self.ammo_panel.show()
         self._update_feed(now, agent)
         self._update_markers(world, agent)
-        # flashbang
-        if now < agent.flash_until:
+        # flashbang — a spectator camera is never blinded
+        if not self.watch and now < agent.flash_until:
             total = max(agent.flash_until - agent.flash_t0, 1e-3)
             left = agent.flash_until - now
             a = min(1.0, left / min(1.2, total)) if left < 1.2 else 1.0
@@ -652,8 +755,41 @@ class HUD:
         else:
             self.flash_card.setColorScale(1, 1, 1, 0)
 
+    def _update_dom(self, mode):
+        zh = self.cjk
+        self.score_panel.hide()
+        self.obj_root.show()
+        for team in (0, 1):
+            for k, cell in enumerate(self.dom_wins[team]):
+                cell.show() if mode.wins[team] > k else cell.hide()
+        target = mode.p["target"]
+        for team in (0, 1):
+            self.dom_cap[team].setText(str(mode.cap[team]))
+            self.dom_bar[team].setSx(max(mode.cap[team] / target, 0.001))
+        left = mode.time_left()
+        clock = f"{int(left // 60)}:{int(left % 60):02d}"
+        if mode.phase == "live":
+            name = mode.points[mode.active]["name"]
+            n0, n1 = mode.present
+            self.dom_point.setText(f"{name} 点  {clock}" if zh else f"POINT {name}  {clock}")
+            if n0 and n1:
+                self.dom_info.setText("争夺中" if zh else "CONTESTED")
+                self.dom_colon.setFg((1, 0.85, 0.2, 1))
+            else:
+                self.dom_info.setText("")
+                self.dom_colon.setFg(DOM_COLORS[0 if n0 else 1] if (n0 or n1) else (1, 1, 1, 1))
+        else:
+            self.dom_colon.setFg((1, 1, 1, 1))
+            self.dom_point.setText("")
+            if mode.phase == "prep":
+                self.dom_info.setText(f"准备阶段 {left:.0f}s" if zh else f"PREPARATION {left:.0f}s")
+            elif mode.phase == "gap":
+                self.dom_info.setText(f"下一个点 {left:.0f}s 后开启" if zh else f"NEXT POINT IN {left:.0f}s")
+            else:
+                self.dom_info.setText("")
+
     def _update_feed(self, now, agent):
-        if not agent.view_mode:
+        if self.god_view or not agent.view_mode:
             self.feed_fx.hide()
             self.reticle.hide()
             self.rec_text.setText("")
@@ -685,18 +821,23 @@ class HUD:
                 label = ("拆弹器" if zh else "DEFUSER") if mode.name == "r6" else "C4"
                 items.append(((b["pos"][0], b["pos"][1], b["pos"][2] + 0.6), label, (1, 0.35, 0.3, 1)))
             else:
-                for i in mode.active_sites:
+                if self.god_view:
+                    site_ids = mode.active_sites
+                else:
+                    site_ids = mode.known_sites(agent) if hasattr(mode, "known_sites") else mode.active_sites
+                for i in site_ids:
                     s = mode.sites[i]
                     c = mode.site_centers[i]
                     items.append(((c[0], c[1], s.get("z", s["zmin"] + 0.5) + 1.6), s["name"], (1, 0.85, 0.4, 0.9)))
-        elif not world.done and mode.name == "dom":
-            for i, p in enumerate(mode.points):
-                c = poly_center(p["poly"])
-                own = mode.owner[i]
-                col = TEAM_COLORS[own] if own >= 0 else (1, 1, 1, 0.9)
-                items.append(((c[0], c[1], p.get("z", p.get("zmin", 0.0) + 0.5) + 2.0), p["name"], col))
+        elif not world.done and mode.name == "dom" and mode.phase == "live":
+            p = mode.points[mode.active]
+            c = poly_center(p["poly"])
+            n0, n1 = mode.present
+            col = (1, 0.85, 0.2, 1) if n0 and n1 else DOM_COLORS[0 if n0 else 1] if n0 or n1 else (1, 1, 1, 0.9)
+            items.append(((c[0], c[1], p.get("z", p.get("zmin", 0.0) + 0.5) + 2.0), p["name"], col))
         for e in world.agents:
-            if e.team != agent.team and e.alive and e.spotted_until > now:
+            enemy = True if self.god_view else e.team != agent.team
+            if enemy and e.alive and e.spotted_until > now:
                 items.append(((e.pos[0], e.pos[1], e.pos[2] + e.height + 0.35), "!", (1, 0.25, 0.2, 1)))
         cam = self.base.cam
         hfov, vfov = self.base.camLens.getFov()
@@ -743,6 +884,7 @@ class HUD:
             self.scope.hide()
             self.scope_cross.hide()
             self.hurt.setColorScale(0.8, 0, 0, 0)
+            self.bleed.setColorScale(1, 1, 1, 0)
             self.vignette.hide()
         else:
             self.vignette.show()
@@ -765,3 +907,4 @@ class HUD:
         self.feed_root.removeNode()
         self.vignette.destroy()
         self.hurt.destroy()
+        self.bleed.destroy()

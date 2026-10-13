@@ -379,6 +379,11 @@ THEME_TEXTURES = {
     "plaster_white": lambda: plaster((0.86, 0.85, 0.8)),
     "plaster_yellow": lambda: plaster((0.85, 0.72, 0.42)),
     "plaster_blue": lambda: plaster((0.45, 0.58, 0.7)),
+    "plaster_red": lambda: plaster((0.6, 0.24, 0.19)),
+    "plaster_dark": lambda: plaster((0.25, 0.25, 0.27), grime=0.15),
+    "tarp": lambda: plaster((0.32, 0.42, 0.3), grime=0.15),
+    "paint_blue": lambda: painted((0.15, 0.28, 0.55), rust_amount=0.25),
+    "paint_red": lambda: painted((0.62, 0.1, 0.08), rust_amount=0.15),
     "brick": lambda: blocks((0.55, 0.26, 0.18), rows=16, cols=6, mortar=(0.62, 0.6, 0.55), mortar_px=2),
     "brick_dark": lambda: blocks((0.32, 0.22, 0.18), rows=16, cols=6, mortar=(0.45, 0.43, 0.4), mortar_px=2),
     "concrete": lambda: concrete(),
@@ -530,11 +535,21 @@ def scope_overlay(size=1024):
     rgba[..., 3] = edge
     vign = np.clip((r - 0.6) / 0.35, 0, 1) ** 2 * 0.55
     rgba[..., 3] = np.maximum(rgba[..., 3], vign)
-    line_w = 1.6 / size * 2
-    thick_w = 5.0 / size * 2
-    cross = ((np.abs(dx) < line_w) | (np.abs(dy) < line_w)) & (r < 0.93)
-    thick = (((np.abs(dx) < thick_w) & (np.abs(dy) > 0.45)) | ((np.abs(dy) < thick_w) & (np.abs(dx) > 0.45))) & (r < 0.93)
-    rgba[cross | thick, 3] = 1.0
+    return rgba
+
+
+def edge_bleed(size=256):
+    """A red frame. Alpha is 0 until close to the border, so the middle of the screen stays clear."""
+    yy, xx = np.mgrid[0:size, 0:size]
+    u = np.abs((xx + 0.5) / size * 2.0 - 1.0)
+    v = np.abs((yy + 0.5) / size * 2.0 - 1.0)
+    edge = np.maximum(u, v)
+    a = np.clip((edge - 0.82) / 0.18, 0, 1) ** 1.2
+    rgba = np.zeros((size, size, 4))
+    rgba[..., 0] = 0.95
+    rgba[..., 1] = 0.04
+    rgba[..., 2] = 0.03
+    rgba[..., 3] = a
     return rgba
 
 
@@ -549,18 +564,20 @@ def vignette(size=256, strength=0.55):
 
 
 def damage_arc(size=256):
+    """Thick red wedge at the top of the quad. The HUD rotates it toward the shooter."""
     yy, xx = np.mgrid[0:size, 0:size]
     dx = (xx - size / 2 + 0.5) / (size / 2)
     dy = (size / 2 - yy - 0.5) / (size / 2)
     r = np.hypot(dx, dy)
     ang = np.degrees(np.arctan2(dx, dy))
-    band = np.clip(1 - np.abs(r - 0.8) / 0.08, 0, 1)
-    arc = np.clip(1 - np.abs(ang) / 28.0, 0, 1)
+    band = np.clip(1 - np.abs(r - 0.72) / 0.16, 0, 1)
+    arc = np.clip(1 - np.abs(ang) / 46.0, 0, 1)
+    a = (band ** 0.65) * (arc ** 0.75)
     rgba = np.zeros((size, size, 4))
-    rgba[..., 0] = 0.9
-    rgba[..., 1] = 0.08
+    rgba[..., 0] = 1.0
+    rgba[..., 1] = 0.07
     rgba[..., 2] = 0.05
-    rgba[..., 3] = band * arc
+    rgba[..., 3] = a
     return rgba
 
 
@@ -640,7 +657,8 @@ class TextureLibrary:
         fn = {
             "soft": soft_circle, "smoke": smoke_puff, "flash": muzzle_flash, "flash_side": flash_side,
             "spark": spark, "tracer": tracer, "hole": bullet_hole, "scorch": scorch, "blood": blood,
-            "scope": scope_overlay, "vignette": vignette, "damage_arc": damage_arc, "sun": sun_glow,
+            "scope": scope_overlay, "vignette": vignette, "edge": edge_bleed, "damage_arc": damage_arc,
+            "sun": sun_glow,
             "clouds": cloud_layer,
         }[key]
         tex = make_texture(fn(), key, mipmap=key not in ("scope",), clamp=key not in ("clouds",))

@@ -170,8 +170,7 @@ def test_siege_defuser_completes():
 def test_drone_spot_and_jammer():
     w, m = _siege(prep_time=30.0)
     att, dfn = w.agents
-    w.step({att.id: Action(gadget=True)})
-    assert att.view_mode == 1
+    assert att.view_mode == 1  # attackers start the round in the drone feed
     drone = w.gadgets.items[att.view_ref]
     start = drone["pos"].copy()
     _hold(w, att.id, Action(move_forward=1.0), 1.0)
@@ -187,8 +186,26 @@ def test_drone_spot_and_jammer():
     p0 = drone["pos"].copy()
     _hold(w, att.id, Action(move_forward=1.0), 0.5)
     assert np.linalg.norm(drone["pos"][:2] - p0[:2]) < 1e-6
+
+
+def test_attackers_locked_in_drone_during_prep():
+    w, m = _siege(prep_time=2.0)
+    att, dfn = w.agents
+    assert att.view_mode == 1 and dfn.view_mode == 0
+    first = att.view_ref
+    spare = w.gadgets.drones_left[att.id]
+    w.step({att.id: Action(gadget=True)})  # G does not deploy the spare during prep
+    assert att.view_mode == 1 and att.view_ref == first and w.gadgets.drones_left[att.id] == spare
+    w.gadgets.shoot(first, 50.0)  # destroyed drone is not replaced until the round is live
+    assert att.view_mode == 0 and w.gadgets.drones_left[att.id] == spare
+    assert not any(it["kind"] == "drone" and it["owner"] == att.id for it in w.gadgets.items.values())
+    _hold(w, att.id, Action(), 2.1)
+    assert m.phase == "live" and att.view_mode == 0
     w.step({att.id: Action(gadget=True)})
-    assert att.view_mode == 0
+    assert att.view_mode == 1
+    w.step({att.id: Action()})
+    w.step({att.id: Action(gadget=True)})
+    assert att.view_mode == 0  # free to leave once live
 
 
 def test_defender_camera_view():
@@ -234,6 +251,38 @@ def test_barricade_blocks_and_breaks():
     assert not w._overlaps(probe, 1.0).any()
 
 
+def test_prep_cannot_kill_and_sites_need_a_drone():
+    w, m = _siege(prep_time=30.0)
+    att, dfn = w.agents
+    zone = m.sites[m.active_sites[0]]
+    cx, cy = poly_center(zone["poly"])
+    z = zone["z"] + 0.02
+    _place(w, dfn, (cx, cy, z))
+    _place(w, att, (cx + 1.2, cy, z), 180.0)
+    att.frozen = True
+    att.ready_at = dfn.ready_at = 0.0
+    att.next_fire = dfn.next_fire = 0.0
+    att_mag, def_mag = att.weapon.mag, dfn.weapon.mag
+    assert m.active_sites[0] not in m.known_sites(att)
+    assert m.active_sites[0] in m.known_sites(dfn)
+    events = []
+    for _ in range(50):
+        att.yaw, att.pitch = angles_to(att.eye(), dfn.eye())
+        dfn.yaw, dfn.pitch = angles_to(dfn.eye(), att.eye())
+        att.punch[:] = dfn.punch[:] = 0.0
+        events += w.step({att.id: Action(fire=True), dfn.id: Action(fire=True)})
+    assert m.phase == "prep"
+    assert att.alive and dfn.alive and att.hp == 100 and dfn.hp == 100
+    assert att.weapon.mag == att_mag  # frozen attackers cannot fire
+    assert dfn.weapon.mag < def_mag  # defenders still shoot (drones), but not players
+    assert not any(e["type"] == "damage" for e in events)
+    assert m.active_sites[0] not in m.found_sites  # standing on the site during prep is not intel
+    w.gadgets._add("drone", att.id, att.team, (cx, cy, z + 0.3), yaw=0.0, pitch=0.0, vz=0.0)
+    w.step({})
+    assert m.active_sites[0] in m.found_sites
+    assert m.active_sites[0] in m.known_sites(att)
+
+
 def test_reinforce_during_prep():
     w, m = _siege(prep_time=30.0)
     dfn = w.agents[1]
@@ -243,6 +292,36 @@ def test_reinforce_during_prep():
     _hold(w, dfn.id, Action(use=True), 3.1)
     assert m.reinforce_left == left - 1
     assert _wall_panel(w).reinforced
+
+
+def test_defenders_set_up_then_hold():
+    w = World(MatchConfig(team_size=2, map_name="bank", mode="r6", seed=3,
+                          mode_params={"prep_time": 20.0, "post_time": 0.5}))
+    w.reset(3)
+    m = w.mode
+    bots = [Bot(w, a.id, "hard", seed=10 + a.id) for a in w.agents]
+    while m.phase == "prep" and w.time < 20.0:
+        w.step({b.aid: b.act() for b in bots})
+    defs = [a for a in w.agents if m.side(a.team) == DEF]
+    assert any(a.armor > 0 for a in defs), "nobody took the armor pack"
+    assert m.reinforce_left < 4
+    while m.phase == "prep":
+        w.step({b.aid: b.act() for b in bots})
+    for b in bots:
+        b.task = None
+        b.replan_at = 0.0
+    for _ in range(int(2.0 / w.dt)):
+        w.step({b.aid: b.act() for b in bots})
+    dfn = next(a for a in w.agents if m.side(a.team) == DEF and a.alive)
+    d = np.array([np.cos(np.radians(dfn.yaw)), np.sin(np.radians(dfn.yaw)), 0.0])
+    pos = next(dfn.eye() + d * dist for dist in (2.0, 3.0, 1.2, 5.0)
+               if w.segment_clear(dfn.eye(), dfn.eye() + d * dist))
+    drone = w.gadgets._add("drone", 0, m.team_of_side(ATT), pos, yaw=0.0, pitch=0.0, vz=0.0)
+    for _ in range(int(2.5 / w.dt)):
+        w.step({b.aid: b.act() for b in bots})
+        if drone["id"] not in w.gadgets.items:
+            break
+    assert drone["id"] not in w.gadgets.items
 
 
 def test_siege_bots_play_a_round():

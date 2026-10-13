@@ -14,8 +14,8 @@ from direct.showbase.ShowBase import ShowBase  # noqa: E402
 from fpsrl.render.models import ModelCache  # noqa: E402
 from fpsrl.render.textures import TextureLibrary  # noqa: E402
 
-NAMES = ["ak47", "m4a4", "m4a1", "famas", "mp5", "mp9", "uzi", "awm", "scar20", "m249", "deagle", "dualies",
-         "knife", "frag", "smoke", "flash", "c4", "defuser", "breach", "thermite", "ash_round", "hammer",
+NAMES = ["ak47", "m4a4", "m4a1", "famas", "mp5", "mp9", "uzi", "awm", "scar20", "m249", "nova", "glock", "deagle", "dualies",
+         "knife", "frag", "smoke", "flash", "molotov", "c4", "defuser", "breach", "thermite", "ash_round", "hammer",
          "flash_shield", "castle", "jammer", "edd", "barbed", "dshield", "armor_bag", "drone", "camera"]
 
 
@@ -44,7 +44,7 @@ def main():
         z = -(i // cols) * 0.75 + 1.1
         node.setPos(x, 0, z)
         node.setH(-90)
-        node.setScale(1.0 if name not in ("frag", "smoke", "flash", "c4", "defuser", "jammer", "edd", "camera",
+        node.setScale(1.0 if name not in ("frag", "smoke", "flash", "molotov", "c4", "defuser", "jammer", "edd", "camera",
                                           "drone", "barbed", "breach") else 2.5)
         tn = TextNode(name)
         tn.setText(name)

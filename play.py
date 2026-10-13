@@ -6,6 +6,7 @@
     py play.py --quick --map desert2 --mode bomb
     py play.py --quick --map bank --mode r6 --team-size 5
     py play.py --autoplay            # watch a bot play from first person
+    py play.py --spectate --map bank --mode r6
 """
 import argparse
 
@@ -33,12 +34,14 @@ def main():
     p.add_argument("--msaa", type=int, default=4)
     p.add_argument("--sensitivity", type=float, default=1.6)
     p.add_argument("--autoplay", action="store_true", help="the player is controlled by a bot (implies --quick)")
+    p.add_argument("--spectate", action="store_true",
+                   help="god-view a bot match; WASD/mouse fly, Q/E up/down, F toggles first person")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--screenshot", default=None, help="save a screenshot after --shot-time seconds and exit")
     p.add_argument("--shot-time", type=float, default=6.0)
     a = p.parse_args()
     w, h = (int(v) for v in a.size.lower().split("x"))
-    if a.quick or a.autoplay or a.screenshot:
+    if a.quick or a.autoplay or a.spectate or a.screenshot:
         diff = a.difficulty
         try:
             diff = float(diff)
@@ -48,7 +51,7 @@ def main():
                       time_limit=a.time_limit, size=(w, h), fullscreen=a.fullscreen, vsync=not a.no_vsync,
                       shadows=not a.no_shadows, msaa=a.msaa, sensitivity=a.sensitivity, autoplay=a.autoplay,
                       seed=a.seed, screenshot=a.screenshot, shot_time=a.shot_time, team=a.team,
-                      map_name=a.map, mode=a.mode)
+                      map_name=a.map, mode=a.mode, spectate=a.spectate)
     else:
         app = App(size=(w, h), fullscreen=True if a.fullscreen else None, vsync=not a.no_vsync,
                   shadows=not a.no_shadows, msaa=a.msaa)

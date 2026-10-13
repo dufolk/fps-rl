@@ -25,6 +25,20 @@ def _aim(shooter, point):
     shooter.yaw, shooter.pitch = angles_to(shooter.eye(), point)
 
 
+def test_agents_block_each_other():
+    w, a, b = _duel()
+    b.pos[:] = b.prev_pos[:] = a.pos + (0.15, 0.0, 0.0)
+    w.step({})
+    assert np.hypot(*(a.pos - b.pos)[:2]) >= 0.58  # overlapping bodies get pushed apart
+    b.pos[:] = b.prev_pos[:] = a.pos + (1.0, 0.0, 0.0)
+    b.vel[:] = 0.0
+    a.yaw = 0.0
+    for _ in range(90):
+        w.step({a.id: Action(move_forward=1)})
+    gap = float(np.hypot(*(a.pos - b.pos)[:2]))
+    assert gap >= 0.55 and a.pos[0] < b.pos[0]  # walking into the other stops at their body
+
+
 def test_headshot_kills():
     w, shooter, target = _duel("awm")
     events = []
@@ -87,6 +101,73 @@ def test_bot_match_produces_kills():
     for _ in range(60 * 60):
         w.step({b.aid: b.act() for b in bots})
     assert sum(w.team_kills) > 0
+
+
+def test_cook_frag_hits_self_and_team():
+    from fpsrl.sim import Projectile, dir_from_angles
+    from fpsrl.weapons import SLOT_FRAG
+
+    w = World(MatchConfig(team_size=2, friendly_fire=False, seed=1))
+    w.reset(1)
+    thrower, mate = w.agents[0], w.agents[1]
+    w.switch_weapon(thrower, SLOT_FRAG)
+    for _ in range(40):
+        w.step({})
+    thrower.protect_until = mate.protect_until = 0.0
+    mate.pos[:] = thrower.pos + np.array([0.9, 0.0, 0.0])
+    mate.prev_pos[:] = mate.pos
+    mate.vel[:] = 0.0
+    ev = w.step({thrower.id: Action(fire=True)})
+    assert thrower.throw_at >= 0 and thrower.cook_until > w.time
+    assert not any(e["type"] == "throw" for e in ev)
+    ev = []
+    for _ in range(20):
+        ev += w.step({})
+    assert any(e["type"] == "throw" for e in ev)
+    assert thrower.alive and w.projectiles
+    assert w.projectiles[0].explode_at - w.time > 1.5
+
+    w = World(MatchConfig(team_size=2, friendly_fire=False, seed=2))
+    w.reset(2)
+    thrower, mate = w.agents[0], w.agents[1]
+    w.switch_weapon(thrower, SLOT_FRAG)
+    for _ in range(40):
+        w.step({})
+    thrower.protect_until = mate.protect_until = 0.0
+    mate.pos[:] = thrower.pos + np.array([0.9, 0.0, 0.0])
+    mate.prev_pos[:] = mate.pos
+    mate.vel[:] = 0.0
+    hp = mate.hp
+    for _ in range(200):
+        w.step({thrower.id: Action(fire=True)})
+        if not thrower.alive:
+            break
+    assert not thrower.alive and thrower.killer == thrower.id
+    assert mate.hp < hp
+
+    w, thrower, victim = _duel()
+    mate_pos = thrower.pos + np.array([1.0, 0.0, 0.0])
+    victim.pos[:] = mate_pos
+    victim.prev_pos[:] = victim.pos
+    victim.team = thrower.team
+    thrower.protect_until = victim.protect_until = 0.0
+    for a in (thrower, victim):
+        origin = a.eye() + dir_from_angles(a.yaw, 0.0) * 1.2
+        a.yaw, a.pitch = angles_to(a.eye(), origin)
+    origin = thrower.eye() + dir_from_angles(thrower.yaw, thrower.pitch) * 1.2
+    victim.yaw, victim.pitch = angles_to(victim.eye(), origin)
+    pr = Projectile(w._new_id(), "flash", thrower.id, thrower.team, origin, np.zeros(3), w.time, w.time)
+    w._detonate(pr)
+    assert thrower.flash_until > w.time and victim.flash_until > w.time
+
+    thrower.hp = victim.hp = 100.0
+    thrower.protect_until = victim.protect_until = 0.0
+    pr = Projectile(w._new_id(), "molotov", thrower.id, thrower.team,
+                    thrower.pos + np.array([0.4, 0.0, 0.15]), np.zeros(3), w.time, w.time)
+    w._detonate(pr)
+    for _ in range(40):
+        w.step({})
+    assert thrower.hp < 100 and victim.hp < 100
 
 
 def test_env_api():

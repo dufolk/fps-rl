@@ -31,7 +31,8 @@ SURFACE_FOR = {"deck": "paint", "steel_plate": "metal", "crate": "wood", "crate_
                "asphalt": "cloth", "grass": "cloth", "carpet": "cloth", "carpet_blue": "cloth",
                "marble": "glass", "tile_floor": "paint", "tile_white": "paint", "wood_floor": "wood",
                "wood_door": "wood", "wood_planks": "wood", "reinforce": "metal", "vault": "metal",
-               "metal": "metal", "metal_dark": "metal", "metal_door": "metal"}
+               "metal": "metal", "metal_dark": "metal", "metal_door": "metal", "tarp": "cloth",
+               "paint_blue": "metal", "paint_red": "metal"}
 
 THEMES = {
     "ship": dict(horizon=(0.78, 0.74, 0.7), zenith=(0.22, 0.4, 0.66), fog=0.0042, sun=(1.35, 1.18, 0.95),
@@ -318,7 +319,9 @@ class WorldScene:
             elif p.kind == "door":
                 n = M.build_door()
             elif p.kind == "tree":
-                n = M.build_tree(p.params.get("seed", int(abs(p.pos[0] * 7 + p.pos[1] * 13))))
+                n = M.build_tree(p.params.get("seed", int(abs(p.pos[0] * 7 + p.pos[1] * 13))),
+                                 p.params.get("autumn", False))
+                n.setScale(p.params.get("scale", 1.0))
             elif p.kind == "palm":
                 n = M.build_palm(p.params.get("seed", int(abs(p.pos[0] * 7 + p.pos[1] * 13))))
             elif p.kind == "car":

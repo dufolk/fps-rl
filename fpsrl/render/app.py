@@ -6,7 +6,7 @@ from ..profile import Profile
 from ..sim import MatchConfig, World
 from .game import ClientSession, LocalSession
 from .ime import hold as hold_ime
-from .menu import MainMenu, PauseMenu, set_fullscreen
+from .menu import MainMenu, PauseMenu, set_borderless
 from .viewer import Viewer
 
 
@@ -14,7 +14,7 @@ class App:
     def __init__(self, size=(1600, 900), fullscreen=None, vsync=True, shadows=True, msaa=4):
         self.profile = Profile.load()
         if fullscreen is not None:
-            self.profile.fullscreen = fullscreen
+            self.profile.borderless = fullscreen
         self.size = size
         # a bot match keeps running behind the menu
         self.menu_world = World(MatchConfig(team_size=4, kill_limit=0, time_limit=0, seed=3,
@@ -26,8 +26,8 @@ class App:
         base.ignore("c")
         base.ignore("v")
         self.apply_volume()
-        if self.profile.fullscreen:
-            set_fullscreen(base, True, size)
+        if self.profile.borderless:
+            set_borderless(base, True, size)
         self.session = None
         self.acc = 0.0
         self.menu = MainMenu(self)
@@ -45,8 +45,8 @@ class App:
         if self.viewer.audio is not None:
             self.viewer.audio.master = self.profile.volume
 
-    def apply_fullscreen(self):
-        set_fullscreen(self.base, self.profile.fullscreen, self.size)
+    def apply_borderless(self):
+        set_borderless(self.base, self.profile.borderless, self.size)
 
     # ------------------------------------------------------------------ flow
     def show_menu(self, message=None):
@@ -70,6 +70,13 @@ class App:
         self._start(LocalSession(self.viewer, p, s["team_size"], s["difficulty"], s["team"], p.primary,
                                  s["kill_limit"], s["time_limit"], on_escape=self.toggle_pause,
                                  map_name=s.get("map", "transport_ship"), mode=s.get("mode")))
+
+    def start_watch(self):
+        p = self.profile
+        s = p.watch
+        self._start(LocalSession(self.viewer, p, s["team_size"], s["difficulty"], 0, p.primary,
+                                 s["kill_limit"], s["time_limit"], on_escape=self.toggle_pause,
+                                 map_name=s.get("map", "transport_ship"), mode=s.get("mode"), spectate=True))
 
     def start_host(self):
         p = self.profile
@@ -102,13 +109,14 @@ class App:
             s.ctrl.capture(True)
         else:
             room = ""
+            live = isinstance(s, ClientSession) or (isinstance(s, LocalSession) and s.server is not None)
             if isinstance(s, LocalSession) and s.server is not None:
                 room = f"{s.server.room}  ·  port {s.server.port}  ·  {len(s.server.players()) + 1} players"
             elif isinstance(s, ClientSession):
                 room = s.room
             s.ctrl.enabled = False
             s.ctrl.capture(False)
-            self.pause.show(room)
+            self.pause.show(room, live=live)
 
     def leave_game(self):
         self.show_menu()

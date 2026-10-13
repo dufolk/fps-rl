@@ -224,8 +224,21 @@ def build_smoke():
     return ps.node(), {}
 
 
+def build_molotov():
+    ps = PartSet("molotov")
+    g, p, c = ps.b("glass"), ps.b("paint"), ps.b("cloth")
+    glass = (0.45, 0.18, 0.05, 1)
+    g.cylinder((0, 0, -0.055), (0, 0, 0.02), 0.024, glass, 14)
+    g.cylinder((0, 0, 0.02), (0, 0, 0.055), 0.012, (0.35, 0.16, 0.05, 1), 12)
+    p.cylinder((0, 0, -0.02), (0, 0, 0.012), 0.022, (0.85, 0.35, 0.08, 1), 12)
+    p.box((-0.02, -0.004, -0.01), (0.02, 0.004, 0.012), (0.9, 0.75, 0.2, 1))
+    c.cylinder((0, 0, 0.05), (0, 0, 0.078), 0.007, (0.25, 0.14, 0.06, 1), 8)
+    p.box((-0.004, -0.004, 0.072), (0.004, 0.004, 0.095), (1.0, 0.45, 0.08, 1))
+    return ps.node(), {}
+
+
 WEAPON_BUILDERS = {"ak47": build_ak47, "awm": build_awm, "deagle": build_deagle,
-                   "knife": build_knife, "frag": build_frag, "smoke": build_smoke}
+                   "knife": build_knife, "frag": build_frag, "smoke": build_smoke, "molotov": build_molotov}
 
 
 def _builder(name: str):
@@ -427,7 +440,7 @@ class SoldierModel:
         self._place_limb(self.limbs["l_upper"], self.limbs["l_fore"], (-0.21, 0.0, 0.0), elbow_l, hand_l)
         self.limbs["r_hand"].setPos(hand_r)
         self.limbs["l_hand"].setPos(hand_l)
-        if name in ("frag", "smoke", "flash"):
+        if name in ("frag", "smoke", "flash", "molotov"):
             self.gun_mount.setPos(hand_r + Point3(0, 0, 0.03))
 
     def pose(self, dt: float, speed: float, crouch: float, pitch: float, on_ground: bool, lean: float = 0.0):
@@ -537,13 +550,16 @@ def build_radar() -> tuple[NodePath, NodePath]:
     return node, bar_np
 
 
-def build_tree(seed: int = 0) -> NodePath:
+def build_tree(seed: int = 0, autumn: bool = False) -> NodePath:
     rng = np.random.default_rng(seed)
     ps = PartSet("tree")
     ps.b("wood").cylinder((0, 0, 0), (0, 0, 2.4), 0.16, (0.32, 0.22, 0.14, 1), 10, radius1=0.11)
     leaf = ps.b("cloth")
     for _ in range(5):
-        c = (0.18 + rng.uniform(0, 0.08), 0.32 + rng.uniform(0, 0.12), 0.1, 1)
+        if autumn:
+            c = (0.82 + rng.uniform(0, 0.1), 0.6 + rng.uniform(0, 0.12), 0.12, 1)
+        else:
+            c = (0.18 + rng.uniform(0, 0.08), 0.32 + rng.uniform(0, 0.12), 0.1, 1)
         leaf.sphere((rng.uniform(-0.6, 0.6), rng.uniform(-0.6, 0.6), 2.6 + rng.uniform(0, 1.2)),
                     rng.uniform(0.8, 1.2), c, 6, 9)
     return ps.node()
