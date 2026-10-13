@@ -333,7 +333,7 @@ def build() -> MapData:
     defender_spawns = {
         0: pts(15.0, -1.0, Z2),
         1: pts(-18.0, 5.6, Z1),
-        2: pts(15.0, 0.5, Z1),
+        2: pts(14.0, -2.4, Z1),
         3: pts(-11.0, -11.0, ZB),
     }
     attackers = [(-14.0 + i * 3.0, -26.0, 0.0, 90.0) for i in range(5)] + \

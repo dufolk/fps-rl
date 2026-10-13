@@ -1,7 +1,6 @@
 """Scripted opponents: grid navigation + perception / aiming model."""
 from __future__ import annotations
 
-import heapq
 import math
 
 import numpy as np
@@ -9,6 +8,7 @@ import numpy as np
 from . import config as C
 from .geometry import point_in_poly, poly_center
 from .modes.rounds import ATT, DEF, RoundMode
+from .nav import NavGrid
 from .sim import IDLE, Action, Agent, World, angles_to, wrap180
 from .weapons import SLOT_BOMB, SLOT_FRAG, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY, SLOT_SMOKE
 
@@ -16,233 +16,6 @@ DIFFICULTY_LEVELS = {"easy": 0.2, "normal": 0.5, "hard": 0.85, "insane": 1.0}
 # tasks the bot keeps doing even when it hears / remembers enemies
 FORCED_TASKS = ("plant", "defuse", "fetch", "reinforce")
 BUSY_TASKS = ("plant", "defuse", "reinforce", "barricade")
-
-
-class NavGrid:
-    """Layered walkable grid derived from the map boxes.
-
-    Every 2D cell can hold several walkable heights (one node per storey); nodes in neighbouring
-    cells are linked when their floor heights differ by at most a step. `map.nav_max_floor` caps
-    which box tops count as floors (e.g. to keep bots off the ship's bridge roof).
-    """
-
-    _cache: dict = {}
-    MAX_LAYERS = 6
-
-    def __init__(self, world: World, cell: float = 0.5, max_floor: float | None = None,
-                 clearance: float = C.PLAYER_RADIUS + 0.02):
-        (x0, y0), (x1, y1) = world.map.bounds
-        if max_floor is None:
-            max_floor = world.map.nav_max_floor
-        self.cell = cell
-        self.x0, self.y0 = x0, y0
-        self.xs = np.arange(x0 + cell / 2, x1, cell)
-        self.ys = np.arange(y0 + cell / 2, y1, cell)
-        self.W, self.H = len(self.xs), len(self.ys)
-        X, Y = np.meshgrid(self.xs, self.ys)
-        P = np.stack([X.ravel(), Y.ravel()], axis=1)
-        bmin, bmax = world.smin, world.smax
-        r = clearance
-        nx, ny, nz, ncell = [], [], [], []
-        chunk = max(1, 4_000_000 // max(1, len(bmin)))
-        for s in range(0, len(P), chunk):
-            Q = P[s:s + chunk]
-            inside = ((Q[:, None, 0] >= bmin[None, :, 0]) & (Q[:, None, 0] <= bmax[None, :, 0])
-                      & (Q[:, None, 1] >= bmin[None, :, 1]) & (Q[:, None, 1] <= bmax[None, :, 1]))
-            near = ((Q[:, None, 0] > bmin[None, :, 0] - r) & (Q[:, None, 0] < bmax[None, :, 0] + r)
-                    & (Q[:, None, 1] > bmin[None, :, 1] - r) & (Q[:, None, 1] < bmax[None, :, 1] + r))
-            for k in range(len(Q)):
-                tops = np.unique(bmax[inside[k], 2])
-                tops = tops[tops <= max_floor]
-                if not len(tops):
-                    continue
-                nb = np.nonzero(near[k])[0]
-                lo, hi = bmin[nb, 2], bmax[nb, 2]
-                found = 0
-                for t in tops[::-1]:
-                    if ((lo < t + 1.7) & (hi > t + 0.46)).any():
-                        continue
-                    nx.append(Q[k, 0])
-                    ny.append(Q[k, 1])
-                    nz.append(t)
-                    ncell.append(s + k)
-                    found += 1
-                    if found >= self.MAX_LAYERS:
-                        break
-        self.nodes = np.stack([np.array(nx), np.array(ny), np.array(nz)], axis=1).reshape(-1, 3)
-        self.node_cell = np.array(ncell, dtype=np.int64)
-        self._index_cells()
-        self._build_adjacency()
-        # keep only the component reachable from the team-0 spawn
-        sx, sy, sz, _ = world.map.spawns[0][0]
-        reach = self._flood(self.nearest_cell((sx, sy, sz)))
-        keep = np.nonzero(reach)[0]
-        self.nodes = self.nodes[keep]
-        self.node_cell = self.node_cell[keep]
-        self._index_cells()
-        self._build_adjacency()
-        self.walkable_cells = np.arange(len(self.nodes))
-        # 2D summary (highest walkable floor per cell) for code that only needs the ground plan
-        self.walk = np.zeros(self.H * self.W, dtype=bool)
-        self.walk[self.node_cell] = True
-        self.walk = self.walk.reshape(self.H, self.W)
-
-    @classmethod
-    def for_world(cls, world: World) -> "NavGrid":
-        key = world.cfg.map_name
-        if key not in cls._cache:
-            cls._cache[key] = cls(world)
-        return cls._cache[key]
-
-    def _index_cells(self):
-        self.cell_nodes: dict[int, list[int]] = {}
-        for i, c in enumerate(self.node_cell.tolist()):
-            self.cell_nodes.setdefault(c, []).append(i)
-
-    def _build_adjacency(self):
-        H, W = self.H, self.W
-        self.adj: list[list[tuple[int, float]]] = [[] for _ in range(len(self.nodes))]
-        dirs = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
-                (1, 1, 1.414), (1, -1, 1.414), (-1, 1, 1.414), (-1, -1, 1.414)]
-        z = self.nodes[:, 2] if len(self.nodes) else np.zeros(0)
-        cn = self.cell_nodes
-        step = C.STEP_HEIGHT
-
-        def match(cell, zi):
-            for j in cn.get(cell, ()):
-                if abs(z[j] - zi) <= step:
-                    return j
-            return -1
-
-        for i in range(len(self.nodes)):
-            cell = int(self.node_cell[i])
-            r, c = divmod(cell, W)
-            zi = z[i]
-            lst = self.adj[i]
-            for dc, dr, cost in dirs:
-                rr, cc = r + dr, c + dc
-                if not (0 <= rr < H and 0 <= cc < W):
-                    continue
-                j = match(rr * W + cc, zi)
-                if j < 0:
-                    continue
-                if dr and dc and (match(r * W + cc, zi) < 0 or match(rr * W + c, zi) < 0):
-                    continue
-                lst.append((j, cost + 0.5 * abs(z[j] - zi)))
-
-    def _flood(self, start: int) -> np.ndarray:
-        seen = np.zeros(len(self.nodes), dtype=bool)
-        if start < 0:
-            return seen
-        stack = [start]
-        seen[start] = True
-        while stack:
-            n = stack.pop()
-            for m, _ in self.adj[n]:
-                if not seen[m]:
-                    seen[m] = True
-                    stack.append(m)
-        return seen
-
-    def cell_rc(self, p):
-        c = int((p[0] - self.x0) / self.cell)
-        r = int((p[1] - self.y0) / self.cell)
-        return min(max(r, 0), self.H - 1), min(max(c, 0), self.W - 1)
-
-    def nearest_cell(self, p, max_ring: int = 8) -> int:
-        """Nearest walkable node, preferring the storey closest to the query height."""
-        r0, c0 = self.cell_rc(p)
-        z = p[2] if len(p) > 2 else 0.0
-        best, best_d = -1, 1e9
-        for ring in range(max_ring + 1):
-            for r in range(r0 - ring, r0 + ring + 1):
-                for c in range(c0 - ring, c0 + ring + 1):
-                    if not (0 <= r < self.H and 0 <= c < self.W) or max(abs(r - r0), abs(c - c0)) != ring:
-                        continue
-                    for j in self.cell_nodes.get(r * self.W + c, ()):
-                        dz = self.nodes[j, 2] - z
-                        d = (r - r0) ** 2 + (c - c0) ** 2 + 4.0 * dz * dz + (40.0 if dz > 1.2 else 0.0)
-                        if d < best_d:
-                            best, best_d = j, d
-            if best >= 0 and ring >= 1:
-                return best
-        return best
-
-    def point(self, idx: int) -> np.ndarray:
-        return self.nodes[idx].copy()
-
-    def random_point(self, rng) -> np.ndarray:
-        return self.nodes[rng.integers(len(self.nodes))].copy()
-
-    def find_path(self, start, goal) -> list[np.ndarray]:
-        s = self.nearest_cell(start)
-        g = self.nearest_cell(goal)
-        if s < 0 or g < 0:
-            return []
-        nodes = self.nodes
-        gp = nodes[g]
-        inv = 1.0 / self.cell
-
-        def h(n):
-            dx = abs(nodes[n, 0] - gp[0]) * inv
-            dy = abs(nodes[n, 1] - gp[1]) * inv
-            return (dx + dy) + (1.414 - 2.0) * min(dx, dy) + abs(nodes[n, 2] - gp[2]) * inv
-
-        openq = [(h(s), 0.0, s)]
-        came = {s: -1}
-        cost = {s: 0.0}
-        while openq:
-            _, gcost, n = heapq.heappop(openq)
-            if n == g:
-                break
-            if gcost > cost.get(n, 1e18):
-                continue
-            for m, w in self.adj[n]:
-                nc = gcost + w
-                if nc < cost.get(m, 1e18):
-                    cost[m] = nc
-                    came[m] = n
-                    heapq.heappush(openq, (nc + h(m), nc, m))
-        if g not in came:
-            return []
-        path = []
-        n = g
-        while n != -1:
-            path.append(n)
-            n = came[n]
-        path.reverse()
-        return self._smooth([self.point(i) for i in path])
-
-    def _line_walkable(self, a, b) -> bool:
-        d = b[:2] - a[:2]
-        dist = float(np.hypot(*d))
-        steps = max(2, int(dist / (self.cell * 0.5)))
-        prev_f = a[2]
-        for k in range(1, steps + 1):
-            p = a[:2] + d * (k / steps)
-            r, c = self.cell_rc(p)
-            f = None
-            for j in self.cell_nodes.get(r * self.W + c, ()):
-                if abs(self.nodes[j, 2] - prev_f) <= C.STEP_HEIGHT:
-                    f = self.nodes[j, 2]
-                    break
-            if f is None:
-                return False
-            prev_f = f
-        return abs(prev_f - b[2]) <= C.STEP_HEIGHT
-
-    def _smooth(self, pts):
-        if len(pts) <= 2:
-            return pts
-        out = [pts[0]]
-        i = 0
-        while i < len(pts) - 1:
-            j = min(len(pts) - 1, i + 24)
-            while j > i + 1 and not self._line_walkable(pts[i], pts[j]):
-                j -= 1
-            out.append(pts[j])
-            i = j
-        return out
 
 
 class Bot:
@@ -283,6 +56,8 @@ class Bot:
         self.path_i = 0
         self.goal = None
         self.replan_at = 0.0
+        self.path_geo = -1
+        self.planned_at = 0.0
         self.last_seen: dict[int, tuple[float, np.ndarray]] = {}
         self.strafe = 0.0
         self.strafe_until = 0.0
@@ -328,6 +103,8 @@ class Bot:
         self.goal = np.asarray(goal, dtype=np.float64)
         self.path = self.nav.find_path(a.pos, self.goal)
         self.path_i = 1 if len(self.path) > 1 else 0
+        self.path_geo = self.world.geo_version
+        self.planned_at = self.world.time
         self.replan_at = self.world.time + self.rng.uniform(2.5, 4.0)
 
     def _pick_goal(self):
@@ -731,6 +508,8 @@ class Bot:
         now = w.time
         if not self.path or self.path_i >= len(self.path) or now >= self.replan_at:
             self._plan(self._pick_goal())
+        elif w.geo_version != self.path_geo and now - self.planned_at > 1.0:
+            self._plan(self.goal)  # walls broken / barricades placed: same goal, new route
         look_yaw, look_pitch = a.yaw, 0.0
         if self.path and self.path_i < len(self.path):
             wp = self.path[self.path_i]
@@ -763,7 +542,7 @@ class Bot:
             return
         ws = a.weapon
         if bashing:
-            # knife through barricades / soft walls the nav grid treats as open
+            # knife through barricades on the route
             if a.slot != SLOT_MELEE:
                 act.switch = SLOT_MELEE
             act.fire = True
