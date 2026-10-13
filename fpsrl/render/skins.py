@@ -76,8 +76,56 @@ SKINS: dict[str, list[Skin]] = {
         _gold(20.0),
     ],
     "smoke": [Skin("default", "原厂", "Factory New")],
+    "m4a4": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("howl", "咆哮", "Howl", 3, "flame", ("metal", "poly"), {}, ((0.6, 0.4, 0.3), 30.0), 5.0),
+        Skin("digital", "城市数码", "Urban Digital", 1, "digital", ("poly", "metal"), {}, None, 5.0),
+        _gold(),
+    ],
+    "m4a1": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("hyper", "次时代", "Hyper Beast", 3, "neon", ("metal", "poly"), {}, ((0.7, 0.7, 0.9), 40.0), 6.0),
+        Skin("arctic", "极地迷彩", "Arctic Camo", 1, "arctic", ("metal", "poly"), {}, None, 6.0),
+        _gold(),
+    ],
+    "famas": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("carbon", "碳纤维", "Carbon Fiber", 2, "carbon", ("poly",), {}, ((0.6, 0.6, 0.65), 50.0), 22.0),
+        _gold(),
+    ],
+    "mp5": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("web", "深红之网", "Crimson Web", 2, "web", ("metal", "poly"), {}, ((0.7, 0.5, 0.5), 40.0), 8.0),
+        _gold(),
+    ],
+    "mp9": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("doppler", "多普勒", "Doppler", 3, "doppler", ("poly",), {}, ((0.9, 0.9, 1.0), 60.0), 7.0),
+        _gold(),
+    ],
+    "uzi": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("blaze", "猛虎", "Tiger Blaze", 2, "blaze", ("metal",), {}, ((0.9, 0.7, 0.5), 50.0), 7.0),
+        _gold(),
+    ],
+    "dualies": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("fade", "渐变之色", "Fade", 3, "fade", ("chrome",), {}, ((1.0, 1.0, 1.0), 80.0), 4.0),
+        _gold(14.0),
+    ],
+    "scar20": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("dragon", "翡翠龙鳞", "Jade Scales", 3, "dragon", ("poly",), {}, ((0.8, 0.7, 0.4), 36.0), 7.0),
+        _gold(),
+    ],
+    "m249": [
+        Skin("default", "原厂", "Factory New"),
+        Skin("arctic", "极地迷彩", "Arctic Camo", 1, "arctic", ("metal", "poly"), {}, None, 6.0),
+        _gold(),
+    ],
 }
-SKIN_WEAPONS = ("ak47", "awm", "deagle", "knife", "frag")
+SKIN_WEAPONS = ("ak47", "m4a4", "m4a1", "famas", "mp5", "mp9", "uzi", "awm", "scar20", "m249", "deagle",
+                "dualies", "knife", "frag")
 
 
 def get_skin(weapon: str, key: str | None) -> Skin:

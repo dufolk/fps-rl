@@ -21,6 +21,38 @@ HIP = {
     "smoke": (Point3(0.13, 0.46, -0.105), Vec3(-15, 10, 0)),
 }
 ADS_Y = {"ak47": 0.38, "awm": 0.3, "deagle": 0.42}
+STYLE_HIP = {
+    "long": (Point3(0.15, 0.62, -0.2), Vec3(2.0, 0, 0)),
+    "pistol": (Point3(0.13, 0.52, -0.17), Vec3(2.5, 0, 0)),
+    "dual": (Point3(0.13, 0.5, -0.17), Vec3(0.0, 0, 0)),
+    "melee": (Point3(0.13, 0.4, -0.1), Vec3(40, 25, -15)),
+    "shield": (Point3(-0.05, 0.62, -0.12), Vec3(8, 0, 0)),
+    "item": (Point3(0.13, 0.46, -0.105), Vec3(-15, 10, 0)),
+}
+STYLE_ADS_Y = {"long": 0.36, "pistol": 0.42}
+KICK = {"rifle": 1.0, "smg": 0.75, "heavy": 1.15, "pistol": 1.6, "sniper": 1.8}
+
+
+def _style(spec) -> str:
+    if spec.kind == "gun":
+        if spec.dual:
+            return "dual"
+        return "pistol" if spec.category == "pistol" else "long"
+    if spec.kind == "melee":
+        return "melee"
+    if spec.kind == "shield":
+        return "shield"
+    return "item"
+
+
+def _hip(name, style):
+    if name in HIP:
+        return HIP[name]
+    if name == "hammer":
+        return Point3(0.16, 0.42, -0.22), Vec3(20, 30, -10)
+    if name in ("scar20",):
+        return Point3(0.15, 0.66, -0.205), Vec3(2.0, 0, 0)
+    return STYLE_HIP[style]
 
 # inspect keyframes: (time, position offset, hpr offset)
 INSPECT = {
@@ -96,53 +128,15 @@ class ViewModel:
         self.holders = {}
         self.infos = {}
         self.flashes = {}
-        sleeve = TEAM_STYLE[team]["shirt"]
-        flash_tex = base_textures(base).sprite("flash")
-        side_tex = base_textures(base).sprite("flash_side")
+        self.duals = {}  # name -> (right gun node, left gun node)
+        self.styles = {}
+        self.dual_side = 0
+        self.dual_kick = [0.0, 0.0]
+        self.sleeve = TEAM_STYLE[team]["shirt"]
+        self.flash_tex = base_textures(base).sprite("flash")
+        self.side_tex = base_textures(base).sprite("flash_side")
         for name in ("ak47", "awm", "deagle", "knife", "frag", "smoke"):
-            holder = self.pivot.attachNewNode(name)
-            gun, info = models.weapon(name, self.skins.get(name))
-            gun.reparentTo(holder)
-            self.guns[name] = gun
-            ps = PartSet("arms_" + name)
-            grip = info.get("grip", Point3(0, 0, 0))
-            if name in ("ak47", "awm"):
-                _arm(ps, grip + Vec3(0.012, 0, -0.01), (0.25, -0.75, -0.5), sleeve)
-                _arm(ps, info["fore"] + Vec3(-0.018, 0, -0.02), (-0.45, -0.6, -0.55), sleeve)
-            elif name == "deagle":
-                _arm(ps, grip + Vec3(0.01, 0, -0.01), (0.2, -0.75, -0.5), sleeve)
-                _arm(ps, grip + Vec3(-0.03, 0.01, -0.025), (-0.55, -0.6, -0.5), sleeve)
-            elif name == "knife":
-                _arm(ps, grip + Vec3(0.0, 0, 0.0), (0.2, -0.85, -0.45), sleeve)
-            else:
-                _arm(ps, (0.0, -0.01, -0.035), (0.25, -0.75, -0.55), sleeve)
-            arms = ps.node()
-            arms.reparentTo(holder)
-            holder.hide()
-            self.holders[name] = holder
-            self.infos[name] = info
-            if name in ("ak47", "awm", "deagle"):
-                fl = holder.attachNewNode("flash")
-                fl.setPos(info["muzzle"])
-                fl.setLightOff(1)
-                fl.setShaderOff(1)
-                _additive(fl)
-                front = _card("flash_front")
-                front.reparentTo(fl)
-                front.setTexture(flash_tex, 1)
-                front.setScale(0.11 if name != "deagle" else 0.08)
-                front.setBillboardPointEye()
-                for r in (0, 90):
-                    side = MeshBuilder("flash_side")
-                    side.quad((0, 0, -0.5), (0, 1, -0.5), (0, 1, 0.5), (0, 0, 0.5), uvs=((0, 0), (1, 0), (1, 1), (0, 1)))
-                    side.quad((0, 1, -0.5), (0, 0, -0.5), (0, 0, 0.5), (0, 1, 0.5), uvs=((1, 0), (0, 0), (0, 1), (1, 1)))
-                    s = side.node()
-                    s.reparentTo(fl)
-                    s.setTexture(side_tex, 1)
-                    s.setScale(0.07, 0.22 if name != "deagle" else 0.14, 0.07)
-                    s.setR(r)
-                fl.hide()
-                self.flashes[name] = fl
+            self._ensure(name)
         # shell casings
         self.casings = []
         brass = MeshBuilder("casing")
@@ -155,6 +149,7 @@ class ViewModel:
         self.casing_idx = 0
 
         self.current = None
+        self.active_flash = []
         self.ads_blend = 0.0
         self.kick = 0.0
         self.kick_roll = 0.0
@@ -168,18 +163,93 @@ class ViewModel:
         self.inspect_kind = "gun"
         self.hidden = False
 
+    def _make_flash(self, parent, pos, small):
+        fl = parent.attachNewNode("flash")
+        fl.setPos(pos)
+        fl.setLightOff(1)
+        fl.setShaderOff(1)
+        _additive(fl)
+        front = _card("flash_front")
+        front.reparentTo(fl)
+        front.setTexture(self.flash_tex, 1)
+        front.setScale(0.08 if small else 0.11)
+        front.setBillboardPointEye()
+        for r in (0, 90):
+            side = MeshBuilder("flash_side")
+            side.quad((0, 0, -0.5), (0, 1, -0.5), (0, 1, 0.5), (0, 0, 0.5), uvs=((0, 0), (1, 0), (1, 1), (0, 1)))
+            side.quad((0, 1, -0.5), (0, 0, -0.5), (0, 0, 0.5), (0, 1, 0.5), uvs=((1, 0), (0, 0), (0, 1), (1, 1)))
+            s = side.node()
+            s.reparentTo(fl)
+            s.setTexture(self.side_tex, 1)
+            s.setScale(0.07, 0.14 if small else 0.22, 0.07)
+            s.setR(r)
+        fl.hide()
+        return fl
+
+    def _ensure(self, name: str):
+        """Build the holder (gun + arms + muzzle flash) for `name` on first use."""
+        if name in self.holders:
+            return
+        spec = WEAPONS[name]
+        style = _style(spec)
+        self.styles[name] = style
+        holder = self.pivot.attachNewNode(name)
+        gun, info = self.models.weapon(name, self.skins.get(name))
+        gun.reparentTo(holder)
+        self.guns[name] = gun
+        ps = PartSet("arms_" + name)
+        grip = info.get("grip", Point3(0, 0, 0))
+        sleeve = self.sleeve
+        if style == "long":
+            _arm(ps, grip + Vec3(0.012, 0, -0.01), (0.25, -0.75, -0.5), sleeve)
+            _arm(ps, info["fore"] + Vec3(-0.018, 0, -0.02), (-0.45, -0.6, -0.55), sleeve)
+        elif style == "pistol":
+            _arm(ps, grip + Vec3(0.01, 0, -0.01), (0.2, -0.75, -0.5), sleeve)
+            _arm(ps, grip + Vec3(-0.03, 0.01, -0.025), (-0.55, -0.6, -0.5), sleeve)
+        elif style == "dual":
+            gun.setX(0.0)
+            left, _ = self.models.weapon(name, self.skins.get(name))
+            left.reparentTo(holder)
+            left.setX(-0.26)
+            self.duals[name] = (gun, left)
+            _arm(ps, grip + Vec3(0.01, 0, -0.01), (0.25, -0.75, -0.5), sleeve)
+            _arm(ps, grip + Vec3(-0.25, 0, -0.01), (-0.25, -0.75, -0.5), sleeve)
+        elif style == "melee":
+            _arm(ps, grip, (0.2, -0.85, -0.45), sleeve)
+            if name == "hammer":
+                _arm(ps, info["fore"] + Vec3(-0.02, 0, 0), (-0.4, -0.7, -0.5), sleeve)
+        elif style == "shield":
+            _arm(ps, grip + Vec3(0.0, -0.02, -0.05), (-0.2, -0.8, -0.5), sleeve)
+        else:
+            _arm(ps, (0.0, -0.01, -0.035), (0.25, -0.75, -0.55), sleeve)
+        ps.node().reparentTo(holder)
+        holder.hide()
+        self.holders[name] = holder
+        self.infos[name] = info
+        if spec.kind == "gun":
+            small = style in ("pistol", "dual") or spec.silenced
+            if style == "dual":
+                self.flashes[name] = [self._make_flash(gun, info["muzzle"], True),
+                                      self._make_flash(left, info["muzzle"], True)]
+            else:
+                fl = self._make_flash(holder, info["muzzle"], small)
+                if spec.silenced:
+                    fl.setScale(0.45)
+                self.flashes[name] = [fl]
+
     def set_aspect(self, aspect: float):
         self.lens.setAspectRatio(aspect)
 
     def set_skins(self, skins: dict):
-        for name, gun in list(self.guns.items()):
-            if skins.get(name) == self.skins.get(name):
-                continue
-            new, _ = self.models.weapon(name, skins.get(name))
-            new.reparentTo(self.holders[name])
-            gun.removeNode()
-            self.guns[name] = new
+        changed = [n for n in self.holders if skins.get(n) != self.skins.get(n)]
         self.skins = dict(skins)
+        for name in changed:
+            self.holders.pop(name).removeNode()
+            self.guns.pop(name, None)
+            self.flashes.pop(name, None)
+            self.duals.pop(name, None)
+            if self.current == name:
+                self.current = None
 
     def inspect(self) -> bool:
         """Start the inspect animation for the current weapon (F key)."""
@@ -211,15 +281,25 @@ class ViewModel:
         t = e["type"]
         if t == "shot":
             spec = WEAPONS[e["weapon"]]
-            self.kick += {"ak47": 1.0, "awm": 2.6, "deagle": 1.8}.get(e["weapon"], 1.0)
-            self.kick = min(self.kick, 3.2)
+            self._ensure(e["weapon"])
+            k = {"awm": 2.6, "deagle": 1.8}.get(e["weapon"], KICK.get(spec.category, 1.0))
+            fls = self.flashes.get(e["weapon"], [])
+            if spec.dual:
+                self.dual_side ^= 1
+                self.dual_kick[self.dual_side] = 1.0
+                k *= 0.5
+                fls = fls[self.dual_side:self.dual_side + 1]
+            self.kick = min(self.kick + k, 3.2)
             self.kick_roll = random.uniform(-1, 1)
             self.flash_t = 0.045
-            fl = self.flashes.get(e["weapon"])
-            if fl is not None:
+            for fl in self.active_flash:
+                fl.hide()
+            self.active_flash = fls
+            for fl in fls:
                 fl.setR(random.uniform(0, 360))
-                fl.setScale(random.uniform(0.85, 1.25))
-            self.flash_light.setColor(Vec4(3.0, 2.0, 0.9, 1))
+                base_s = 0.45 if spec.silenced else 1.0
+                fl.setScale(base_s * random.uniform(0.85, 1.25))
+            self.flash_light.setColor(Vec4(1.0, 0.7, 0.3, 1) if spec.silenced else Vec4(3.0, 2.0, 0.9, 1))
             self._eject(e["weapon"])
             self.cancel_inspect()
             if spec.unscope_after_shot:
@@ -230,6 +310,8 @@ class ViewModel:
             self._play("throw", 0.55)
         elif t == "switch":
             self._play("draw", WEAPONS[e["weapon"]].draw_time)
+        elif t in ("busy", "gadget_placed", "launch"):
+            self._play("draw", 0.35)
         elif t == "reload":
             self.cancel_inspect()
         elif t == "land":
@@ -242,6 +324,8 @@ class ViewModel:
         info = self.infos.get(weapon)
         if holder is None or "eject" not in info:
             return
+        if weapon in self.duals:
+            holder = self.duals[weapon][self.dual_side]
         slot = self.casings[self.casing_idx]
         self.casing_idx = (self.casing_idx + 1) % len(self.casings)
         p = self.root.getRelativePoint(holder, info["eject"])
@@ -255,7 +339,9 @@ class ViewModel:
     def update(self, dt, world, agent, mouse_dx, mouse_dy, sun_quat=None):
         if sun_quat is not None:
             self.sun_np.setQuat(sun_quat)
-        name = agent.weapon.name if agent.alive else None
+        name = agent.weapon.name if agent.alive and agent.slot in agent.inv else None
+        if name is not None:
+            self._ensure(name)
         if name != self.current:
             if self.current:
                 self.holders[self.current].hide()
@@ -283,12 +369,22 @@ class ViewModel:
         amp = min(1.0, speed / 5.0) * (1.0 if agent.on_ground else 0.2) * (1 - 0.85 * self.ads_blend)
         self.bob_phase += dt * speed * 1.9
 
-        hip_pos, hip_hpr = HIP[name]
+        style = self.styles[name]
+        hip_pos, hip_hpr = _hip(name, style)
         info = self.infos[name]
-        if name in ADS_Y:
-            ads_pos = Point3(0.0, ADS_Y[name], -info["sight_z"])
+        ads_y = ADS_Y.get(name, STYLE_ADS_Y.get(style) if spec.ads_fov else None)
+        if spec.scope_overlay:
+            ads_y = 0.3
+        if ads_y is not None and "sight_z" in info:
+            ads_pos = Point3(0.0, ads_y, -info["sight_z"])
         else:
             ads_pos = hip_pos
+        if name in self.duals:
+            for i, gun in enumerate(self.duals[name]):
+                self.dual_kick[i] *= math.exp(-dt * 18.0)
+                gun.setY(-self.dual_kick[i] * 0.035)
+                gun.setP(self.dual_kick[i] * 9.0)
+            self.duals[name][1].setX(-0.26)
         a = self.ads_blend
         pos = hip_pos * (1 - a) + ads_pos * a
         hpr = Vec3(hip_hpr) * (1 - a)
@@ -346,15 +442,14 @@ class ViewModel:
                     dp, dh = _inspect_pose(self.inspect_kind, self.anim_t)
                     pos += dp
                     hpr += dh
-        if spec.kind == "grenade" and agent.weapon.mag <= 0:
+        if spec.kind in ("grenade", "gadget") and agent.weapon.mag <= 0:
             holder.hide()
         holder.setPos(pos)
         holder.setHpr(hpr)
 
         if self.flash_t > 0:
             self.flash_t -= dt
-            fl = self.flashes.get(name)
-            if fl is not None:
+            for fl in self.active_flash:
                 if self.flash_t > 0 and not scoped:
                     fl.show()
                 else:

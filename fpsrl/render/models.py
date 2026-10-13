@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 from panda3d.core import Material, NodePath, Point3, Quat, Vec3
 
 from .meshes import MeshBuilder
@@ -227,6 +228,13 @@ WEAPON_BUILDERS = {"ak47": build_ak47, "awm": build_awm, "deagle": build_deagle,
                    "knife": build_knife, "frag": build_frag, "smoke": build_smoke}
 
 
+def _builder(name: str):
+    if name in WEAPON_BUILDERS:
+        return WEAPON_BUILDERS[name]
+    from .guns import GUN_BUILDERS
+    return GUN_BUILDERS[name]
+
+
 class ModelCache:
     def __init__(self):
         self._cache = {}
@@ -236,7 +244,7 @@ class ModelCache:
         sk = get_skin(name, skin)
         key = (name, sk.key)
         if key not in self._cache:
-            node, info = WEAPON_BUILDERS[name]()
+            node, info = _builder(name)()
             if sk.key == "default":
                 node.flattenStrong()
             else:
@@ -346,6 +354,7 @@ class SoldierModel:
             self.legs[side] = (hip, knee)
 
         self.weapon_np = None
+        self.offhand_np = None
         self.weapon_name = None
         self.weapon_skin = None
         self.phase = 0.0
@@ -365,24 +374,51 @@ class SoldierModel:
             self.weapon_np.removeNode()
         self.weapon_name = name
         self.weapon_skin = skin
+        from ..weapons import SLOT_PRIMARY, WEAPONS
         node, info = self.models.weapon(name, skin)
         node.reparentTo(self.gun_mount)
         self.weapon_np = node
+        if self.offhand_np is not None:
+            self.offhand_np.removeNode()
+            self.offhand_np = None
+        spec = WEAPONS.get(name)
+        style = "item"
+        if spec is not None:
+            if spec.kind == "gun":
+                style = "dual" if spec.dual else ("long" if spec.slot == SLOT_PRIMARY else "pistol")
+            elif name == "hammer":
+                style = "long"
+            elif spec.kind == "shield":
+                style = "shield"
         grip = info.get("grip", Point3(0, 0, 0))
-        if name in ("ak47", "awm"):
+        if style == "long":
             hand_r = Point3(0.12, 0.3, -0.08)
-        elif name == "deagle":
+        elif style in ("pistol", "shield"):
             hand_r = Point3(0.06, 0.42, 0.0)
+        elif style == "dual":
+            hand_r = Point3(0.14, 0.42, 0.0)
         else:
             hand_r = Point3(0.2, 0.3, -0.12)
         self.gun_mount.setPos(hand_r - grip)
         fore = info.get("fore", grip) + self.gun_mount.getPos()
-        if name in ("ak47", "awm"):
+        if style == "long":
             hand_l = fore
             elbow_l = Point3(-0.12, 0.2, -0.22)
-        elif name == "deagle":
+        elif style == "pistol":
             hand_l = hand_r + Point3(-0.05, -0.01, -0.02)
             elbow_l = Point3(-0.18, 0.18, -0.2)
+        elif style == "dual":
+            hand_l = Point3(-0.14, 0.42, 0.0)
+            elbow_l = Point3(-0.24, 0.16, -0.2)
+            off, _ = self.models.weapon(name, skin)
+            off.reparentTo(self.arms)
+            off.setPos(hand_l - grip)
+            self.offhand_np = off
+        elif style == "shield":
+            hand_l = Point3(-0.12, 0.38, -0.05)
+            elbow_l = Point3(-0.24, 0.14, -0.2)
+            self.gun_mount.setPos(hand_l - grip + Point3(0.08, 0.06, 0))
+            hand_r = Point3(0.12, 0.3, -0.15)
         else:
             hand_l = Point3(-0.24, 0.12, -0.42)
             elbow_l = Point3(-0.25, 0.02, -0.2)
@@ -391,11 +427,13 @@ class SoldierModel:
         self._place_limb(self.limbs["l_upper"], self.limbs["l_fore"], (-0.21, 0.0, 0.0), elbow_l, hand_l)
         self.limbs["r_hand"].setPos(hand_r)
         self.limbs["l_hand"].setPos(hand_l)
-        if name in ("frag", "smoke"):
+        if name in ("frag", "smoke", "flash"):
             self.gun_mount.setPos(hand_r + Point3(0, 0, 0.03))
 
-    def pose(self, dt: float, speed: float, crouch: float, pitch: float, on_ground: bool):
-        """crouch in [0,1]; pitch in degrees."""
+    def pose(self, dt: float, speed: float, crouch: float, pitch: float, on_ground: bool, lean: float = 0.0):
+        """crouch in [0,1]; pitch in degrees; lean in [-1, 1] (+ = right)."""
+        self.spine.setR(lean * 16.0)
+        self.pelvis.setX(lean * 0.05)
         self.phase += dt * (speed * 2.1 + 0.0001)
         amp = min(1.0, speed / 5.0) if on_ground else 0.3
         hip_z = 0.92 - 0.3 * crouch
@@ -497,6 +535,74 @@ def build_radar() -> tuple[NodePath, NodePath]:
     bar_np.reparentTo(node)
     bar_np.setZ(1.7)
     return node, bar_np
+
+
+def build_tree(seed: int = 0) -> NodePath:
+    rng = np.random.default_rng(seed)
+    ps = PartSet("tree")
+    ps.b("wood").cylinder((0, 0, 0), (0, 0, 2.4), 0.16, (0.32, 0.22, 0.14, 1), 10, radius1=0.11)
+    leaf = ps.b("cloth")
+    for _ in range(5):
+        c = (0.18 + rng.uniform(0, 0.08), 0.32 + rng.uniform(0, 0.12), 0.1, 1)
+        leaf.sphere((rng.uniform(-0.6, 0.6), rng.uniform(-0.6, 0.6), 2.6 + rng.uniform(0, 1.2)),
+                    rng.uniform(0.8, 1.2), c, 6, 9)
+    return ps.node()
+
+
+def build_palm(seed: int = 0) -> NodePath:
+    rng = np.random.default_rng(seed)
+    ps = PartSet("palm")
+    trunk = ps.b("wood")
+    lean = rng.uniform(-0.5, 0.5, 2)
+    top = (lean[0], lean[1], 5.5)
+    trunk.cylinder((0, 0, 0), top, 0.18, (0.48, 0.38, 0.26, 1), 8, radius1=0.12)
+    leaf = ps.b("cloth")
+    for k in range(8):
+        a = k * math.pi / 4 + rng.uniform(-0.2, 0.2)
+        end = (top[0] + math.cos(a) * 2.2, top[1] + math.sin(a) * 2.2, top[2] - 0.9)
+        mid = (top[0] + math.cos(a) * 1.1, top[1] + math.sin(a) * 1.1, top[2] + 0.2)
+        g = (0.2, 0.38 + rng.uniform(0, 0.1), 0.12, 1)
+        leaf.cylinder(top, mid, 0.22, g, 4, radius1=0.18)
+        leaf.cylinder(mid, end, 0.18, g, 4, radius1=0.02)
+    return ps.node()
+
+
+def build_car(color=(0.6, 0.12, 0.1)) -> NodePath:
+    ps = PartSet("car")
+    p = ps.b("paint")
+    c = (*color, 1)
+    p.box((-2.1, -0.85, 0.3), (2.1, 0.85, 0.95), c)
+    p.box((-1.1, -0.78, 0.95), (1.0, 0.78, 1.45), c)
+    ps.b("glass").box((-1.05, -0.8, 1.0), (0.95, 0.8, 1.4), (0.1, 0.13, 0.18, 1))
+    dark = (0.06, 0.06, 0.06, 1)
+    for x in (-1.35, 1.35):
+        for y in (-0.82, 0.82):
+            ps.b("poly").cylinder((x, y - 0.1, 0.32), (x, y + 0.1, 0.32), 0.32, dark, 12)
+    p.box((2.1, -0.7, 0.6), (2.14, -0.4, 0.75), (1.0, 0.95, 0.8, 1))
+    p.box((2.1, 0.4, 0.6), (2.14, 0.7, 0.75), (1.0, 0.95, 0.8, 1))
+    return ps.node()
+
+
+def build_ceiling_light() -> tuple[NodePath, NodePath]:
+    ps = PartSet("clight")
+    ps.b("metal").box((-0.6, -0.15, 0.0), (0.6, 0.15, 0.06), (0.6, 0.6, 0.6, 1))
+    node = ps.node()
+    bulb = MeshBuilder("cbulb")
+    bulb.box((-0.55, -0.11, -0.01), (0.55, 0.11, 0.0), (1.0, 0.97, 0.88, 1))
+    b = bulb.node()
+    b.reparentTo(node)
+    return node, b
+
+
+def build_desk() -> NodePath:
+    ps = PartSet("desk")
+    w = ps.b("wood")
+    col = (0.42, 0.28, 0.16, 1)
+    w.box((-0.8, -0.4, 0.72), (0.8, 0.4, 0.77), col)
+    w.box((-0.78, -0.38, 0.0), (-0.7, 0.38, 0.72), col)
+    w.box((0.7, -0.38, 0.0), (0.78, 0.38, 0.72), col)
+    ps.b("poly").box((-0.25, -0.05, 0.77), (0.25, 0.02, 1.1), (0.08, 0.08, 0.09, 1))
+    return ps.node()
 
 
 def build_door() -> NodePath:

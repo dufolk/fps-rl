@@ -224,6 +224,188 @@ def water(size=512):
     return col, normal_from_height(n1 * 0.7 + n2 * 0.3, 6.0)
 
 
+def sand(size=512, base=(0.78, 0.66, 0.46)):
+    h = w = size
+    n1 = noise(h, w, 6, 6, 0.55)
+    n2 = noise(h, w, 32, 3)
+    ripples = np.sin((np.mgrid[0:h, 0:w][0] / h * 40 + noise(h, w, 3, 3) * 12)) * 0.5 + 0.5
+    col = np.asarray(base)[None, None, :] * (0.82 + 0.22 * n1[..., None]) * (0.92 + 0.1 * n2[..., None])
+    col *= (0.96 + 0.06 * ripples[..., None])
+    return col, normal_from_height(n1 * 0.4 + ripples * 0.15 + n2 * 0.2, 1.5)
+
+
+def blocks(base, size=512, rows=8, cols=4, mortar=(0.6, 0.55, 0.45), jitter=0.12, stagger=True, mortar_px=3):
+    """Masonry: stone blocks / bricks with mortar lines."""
+    h = w = size
+    yy, xx = np.mgrid[0:h, 0:w]
+    rh = h // rows
+    cw = w // cols
+    row = yy // rh
+    off = (row % 2) * (cw // 2) if stagger else 0
+    col_idx = (xx + off) // cw
+    rng = np.random.default_rng(int(sum(base) * 1000) % 9973)
+    tint = rng.uniform(1 - jitter, 1 + jitter, (rows + 1, cols + 2))
+    t = tint[row % (rows + 1), col_idx % (cols + 2)]
+    n1 = noise(h, w, 8, 5)
+    col = np.asarray(base)[None, None, :] * t[..., None] * (0.85 + 0.25 * n1[..., None])
+    gap = ((yy % rh) < mortar_px) | (((xx + off) % cw) < mortar_px)
+    col[gap] = np.asarray(mortar) * (0.8 + 0.2 * n1[gap][..., None])
+    height = 0.6 + 0.2 * n1
+    height[gap] = 0.0
+    return col, normal_from_height(height, 2.0)
+
+
+def plaster(base, size=256, grime=0.25):
+    h = w = size
+    n1 = noise(h, w, 6, 6, 0.55)
+    st = noise(h, w, 2, 4, aspect=(6, 0.4))
+    col = np.asarray(base)[None, None, :] * (0.88 + 0.16 * n1[..., None])
+    dirt = np.clip((st - 0.5) * 2.5, 0, 1) * grime
+    col = col * (1 - dirt[..., None] * 0.5)
+    yy = np.arange(h)[:, None] / h
+    col = col * (0.9 + 0.1 * (1 - yy[..., None]) ** 0.2)
+    chips = noise(h, w, 16, 3) > 0.78
+    col[chips] *= 0.82
+    return col, normal_from_height(n1 * 0.3 - chips * 0.3, 1.2)
+
+
+def concrete(size=256, base=(0.55, 0.55, 0.53), seams=True):
+    h = w = size
+    n1 = noise(h, w, 8, 6, 0.6)
+    n2 = noise(h, w, 32, 3)
+    col = np.asarray(base)[None, None, :] * (0.82 + 0.25 * n1[..., None]) * (0.92 + 0.1 * n2[..., None])
+    height = n1 * 0.3 + n2 * 0.1
+    if seams:
+        yy, xx = np.mgrid[0:h, 0:w]
+        s = (xx < 2) | (yy < 2)
+        col[s] *= 0.6
+        height[s] = 0
+    return col, normal_from_height(height, 1.5)
+
+
+def asphalt(size=512):
+    h = w = size
+    n2 = noise(h, w, 64, 2)
+    grit = np.random.default_rng(3).random((h, w))
+    col = np.array([0.2, 0.2, 0.21])[None, None, :] * (0.8 + 0.3 * n2[..., None]) + (grit > 0.97)[..., None] * 0.12
+    patch = noise(h, w, 3, 4) > 0.62
+    col[patch] *= 0.8
+    return col, normal_from_height(n2 * 0.4 + grit * 0.1, 1.0)
+
+
+def grass(size=512):
+    h = w = size
+    n1 = noise(h, w, 6, 6, 0.55)
+    n2 = noise(h, w, 48, 3)
+    col = np.array([0.24, 0.36, 0.14])[None, None, :] * (0.75 + 0.4 * n1[..., None]) * (0.85 + 0.3 * n2[..., None])
+    dry = np.clip((noise(h, w, 4, 4) - 0.55) * 3, 0, 1)
+    col = col * (1 - dry[..., None] * 0.5) + np.array([0.45, 0.4, 0.22]) * dry[..., None] * 0.5
+    return col, normal_from_height(n2 * 0.5 + n1 * 0.2, 2.0)
+
+
+def tiles(base, size=256, n=4, grout=(0.3, 0.3, 0.3), checker=None):
+    h = w = size
+    yy, xx = np.mgrid[0:h, 0:w]
+    c = size // n
+    n1 = noise(h, w, 8, 5)
+    col = np.asarray(base)[None, None, :] * (0.9 + 0.12 * n1[..., None])
+    if checker is not None:
+        chk = (((xx // c) + (yy // c)) % 2) == 1
+        col[chk] = np.asarray(checker) * (0.9 + 0.12 * n1[chk][..., None])
+    g = ((xx % c) < 2) | ((yy % c) < 2)
+    col[g] = grout
+    height = np.ones((h, w)) * 0.5
+    height[g] = 0
+    return col, normal_from_height(height, 1.0)
+
+
+def marble(size=512, base=(0.85, 0.84, 0.8)):
+    h = w = size
+    n = noise(h, w, 3, 6, 0.6)
+    veins = np.abs(np.sin((np.mgrid[0:h, 0:w][1] / w * 6 + n * 9) * np.pi)) ** 0.15
+    col = np.asarray(base)[None, None, :] * (0.75 + 0.25 * veins[..., None])
+    yy, xx = np.mgrid[0:h, 0:w]
+    g = ((xx % (w // 2)) < 2) | ((yy % (h // 2)) < 2)
+    col[g] *= 0.7
+    return col, normal_from_height(np.where(g, 0.0, 0.5), 0.8)
+
+
+def carpet(size=256, base=(0.42, 0.12, 0.1)):
+    h = w = size
+    n2 = noise(h, w, 64, 2)
+    yy, xx = np.mgrid[0:h, 0:w] / size
+    pattern = (np.abs(((xx * 4) % 1) - 0.5) < 0.04) | (np.abs(((yy * 4) % 1) - 0.5) < 0.04)
+    col = np.asarray(base)[None, None, :] * (0.8 + 0.3 * n2[..., None])
+    col[pattern] = col[pattern] * 0.6 + np.array([0.6, 0.5, 0.2]) * 0.4
+    return col, normal_from_height(n2 * 0.6, 1.0)
+
+
+def roof(size=256, base=(0.48, 0.2, 0.14)):
+    h = w = size
+    yy, xx = np.mgrid[0:h, 0:w]
+    rows = 8
+    rh = h // rows
+    off = ((yy // rh) % 2) * (w // 8)
+    wave = np.sin(((xx + off) % (w // 4)) / (w // 4) * np.pi)
+    shade = (yy % rh) / rh
+    n1 = noise(h, w, 8, 4)
+    col = np.asarray(base)[None, None, :] * (0.7 + 0.25 * wave[..., None] + 0.15 * shade[..., None]) \
+        * (0.85 + 0.25 * n1[..., None])
+    return col, normal_from_height(wave * 0.6 + shade * 0.4, 2.5)
+
+
+def reinforce(size=256):
+    h = w = size
+    col, _ = painted((0.32, 0.34, 0.36), size, 0.25)
+    yy, xx = np.mgrid[0:h, 0:w]
+    bars = (np.abs((xx % (w // 2)) - w // 4) < 10)
+    col[bars] *= 0.65
+    rivets = (((xx % 32) - 16) ** 2 + ((yy % 32) - 16) ** 2) < 10
+    col[rivets] = (0.55, 0.55, 0.58)
+    height = np.zeros((h, w))
+    height[bars] = 0.8
+    height[rivets] = 1.0
+    stripe = (((xx + yy) // 20) % 2 == 0) & (yy > h - 24)
+    col[stripe] = (0.85, 0.65, 0.1)
+    return col, normal_from_height(height, 2.0)
+
+
+THEME_TEXTURES = {
+    "sand": lambda: sand(),
+    "sand_dark": lambda: sand(base=(0.66, 0.54, 0.37)),
+    "sandstone": lambda: blocks((0.76, 0.62, 0.42), rows=6, cols=3, mortar=(0.62, 0.52, 0.38)),
+    "sandstone_dark": lambda: blocks((0.6, 0.48, 0.32), rows=6, cols=3, mortar=(0.5, 0.42, 0.3)),
+    "plaster_tan": lambda: plaster((0.8, 0.7, 0.52)),
+    "plaster_white": lambda: plaster((0.86, 0.85, 0.8)),
+    "plaster_yellow": lambda: plaster((0.85, 0.72, 0.42)),
+    "plaster_blue": lambda: plaster((0.45, 0.58, 0.7)),
+    "brick": lambda: blocks((0.55, 0.26, 0.18), rows=16, cols=6, mortar=(0.62, 0.6, 0.55), mortar_px=2),
+    "brick_dark": lambda: blocks((0.32, 0.22, 0.18), rows=16, cols=6, mortar=(0.45, 0.43, 0.4), mortar_px=2),
+    "concrete": lambda: concrete(),
+    "concrete_dark": lambda: concrete(base=(0.38, 0.38, 0.37)),
+    "asphalt": lambda: asphalt(),
+    "grass": lambda: grass(),
+    "tile_floor": lambda: tiles((0.78, 0.76, 0.7), checker=(0.3, 0.32, 0.34)),
+    "tile_white": lambda: tiles((0.85, 0.86, 0.86), n=8, grout=(0.6, 0.6, 0.6)),
+    "marble": lambda: marble(),
+    "carpet": lambda: carpet(),
+    "carpet_blue": lambda: carpet(base=(0.12, 0.16, 0.32)),
+    "wood_floor": lambda: wood(base=(0.5, 0.33, 0.18)),
+    "wood_door": lambda: wood(base=(0.45, 0.28, 0.14)),
+    "wood_planks": lambda: wood(base=(0.58, 0.42, 0.24)),
+    "roof": lambda: roof(),
+    "roof_grey": lambda: roof(base=(0.3, 0.32, 0.34)),
+    "drywall": lambda: plaster((0.82, 0.8, 0.74), grime=0.1),
+    "drywall_green": lambda: plaster((0.55, 0.62, 0.52), grime=0.1),
+    "reinforce": lambda: reinforce(),
+    "metal_dark": lambda: painted((0.18, 0.19, 0.2), rust_amount=0.1),
+    "metal_door": lambda: painted((0.35, 0.4, 0.38), rust_amount=0.4),
+    "metal": lambda: painted((0.45, 0.46, 0.47), rust_amount=0.15),
+    "vault": lambda: steel_plate(),
+    "stone_dark": lambda: blocks((0.4, 0.38, 0.35), rows=4, cols=2, mortar=(0.3, 0.3, 0.28)),
+}
+
+
 def flat_normal(size=4):
     n = np.zeros((size, size, 3))
     n[..., 2] = 1.0
@@ -444,6 +626,8 @@ class TextureLibrary:
             col, nrm = hatch()
         elif key == "water":
             col, nrm = water()
+        elif key in THEME_TEXTURES:
+            col, nrm = THEME_TEXTURES[key]()
         else:
             col, nrm = painted((0.5, 0.5, 0.5))
         pair = (make_texture(col, key), make_texture(nrm, key + "_n"))

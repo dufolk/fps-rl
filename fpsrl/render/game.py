@@ -22,20 +22,20 @@ from ..profile import SENSITIVITY_STEP, clamp_sensitivity
 from ..net.protocol import (B_ALT, B_FIRE, B_RELOAD, apply_agent, apply_world, encode_input, input_to_action,
                             world_state)
 from ..sim import TEAM_NAMES, Action, MatchConfig, World
-from ..weapons import PRIMARY_CHOICES
+from ..weapons import NUM_SLOTS, PRIMARY_CHOICES
 from .viewer import BASE_HFOV, Viewer
 
 HELP_ZH = """[F1] 隐藏帮助
-WASD 移动    空格 跳    Ctrl/C 蹲    Shift 静步
+WASD 移动    空格 跳    Ctrl/C 蹲    Shift 静步    Q/E 左右探头
 左键 开火/轻刀/投掷    右键 瞄准/开镜/重刀/低抛
-R 换弹    1-5 武器    Q 上一把    滚轮 切换    F 检视武器
-B 切换步枪/狙击 (出生后几秒内)    Tab 计分板
+R 换弹    1-7 武器    X 上一把    滚轮 切换    F 交互(安包/拆包/加固/路障)·检视
+G 无人机/摄像头    B 购买/切换主武器    Tab 计分板
 Esc 菜单    F2 瞄准按住/切换    F3 第三人称    F4 FPS    +/- 灵敏度"""
 HELP_EN = """[F1] hide help
-WASD move    SPACE jump    CTRL/C crouch    SHIFT walk
+WASD move    SPACE jump    CTRL/C crouch    SHIFT walk    Q/E lean
 LMB fire / slash / throw    RMB aim / scope / heavy stab / underhand
-R reload    1-5 weapons    Q last weapon    wheel cycle    F inspect
-B switch rifle <-> sniper (right after spawning)    TAB scoreboard
+R reload    1-7 weapons    X last weapon    wheel cycle    F use (plant/defuse/reinforce) / inspect
+G drone / cameras    B buy menu / cycle primary    TAB scoreboard
 ESC menu    F2 aim hold/toggle    F3 third person    F4 fps    +/- sensitivity"""
 
 
@@ -52,32 +52,37 @@ class _Settings:
 
 
 class PlayerController:
-    def __init__(self, viewer: Viewer, settings, on_escape=None, on_primary=None, on_restart=None):
+    def __init__(self, viewer: Viewer, settings, on_escape=None, on_primary=None, on_restart=None, on_buy=None):
         self.viewer = viewer
         self.base = base = viewer.base
         self.settings = settings
         self.on_escape = on_escape
         self.on_primary = on_primary
         self.on_restart = on_restart
+        self.on_buy = on_buy  # opens the buy menu in economy modes
         self.enabled = True
         self.captured = False
         self.fire_latch = self.alt_latch = False
+        self.use_latch = self.gadget_latch = False
+        self.f_pending = 0
+        self.view_look = [0.0, 0.0]
         self.ads_state = False
         self.switch_req = 0
         self.show_help = True
         self.fps_t, self.fps_n = time.perf_counter(), 0
         self.mw = base.mouseWatcherNode
-        self.kb = {k: KeyboardButton.asciiKey(k) for k in "wasdcr"}
+        self.kb = {k: KeyboardButton.asciiKey(k) for k in "wasdcrqefg"}
         self.ev = ev = DirectObject()
         ev.accept("mouse1", self._latch, ["fire"])
         ev.accept("mouse3", self._latch, ["alt"])
         ev.accept("wheel_up", self._cycle, [-1])
         ev.accept("wheel_down", self._cycle, [1])
-        for i in range(1, 6):
+        for i in range(1, NUM_SLOTS + 1):
             ev.accept(str(i), self._switch, [i])
-        ev.accept("q", self._last)
-        ev.accept("b", self._toggle_primary)
-        ev.accept("f", self._inspect)
+        ev.accept("x", self._last)
+        ev.accept("b", self._buy_or_primary)
+        ev.accept("f", self._use_press)
+        ev.accept("g", self._gadget_press)
         ev.accept("escape", self._escape)
         ev.accept("f1", self._toggle_help)
         ev.accept("f2", self._toggle_ads_mode)
@@ -134,12 +139,29 @@ class PlayerController:
             return
         a = self.agent
         slot = a.slot
-        for _ in range(5):
-            slot = (slot - 1 + d) % 5 + 1
+        for _ in range(NUM_SLOTS):
+            slot = (slot - 1 + d) % NUM_SLOTS + 1
             ws = a.inv.get(slot)
-            if ws and (ws.spec.kind != "grenade" or ws.mag > 0):
+            if ws and (ws.spec.kind not in ("grenade", "gadget") or ws.mag > 0):
                 break
         self.switch_req = slot
+
+    def _use_press(self):
+        if self.enabled and self.captured:
+            self.use_latch = True
+            self.f_pending = 3
+
+    def _gadget_press(self):
+        if self.enabled and self.captured:
+            self.gadget_latch = True
+
+    def _buy_or_primary(self):
+        if not self.enabled:
+            return
+        if self.on_buy is not None and not self.viewer.world.mode.free_weapons:
+            self.on_buy()
+        else:
+            self._toggle_primary()
 
     def _toggle_primary(self):
         if not self.enabled:
@@ -153,10 +175,6 @@ class PlayerController:
             self.info(f"主武器: {new.upper()}" + ("" if now else " (下次出生生效)"))
         else:
             self.info(f"Primary: {new.upper()}" + ("" if now else " (next spawn)"))
-
-    def _inspect(self):
-        if self.enabled and self.captured:
-            self.viewer.inspect()
 
     def _escape(self):
         if self.on_escape is not None:
@@ -228,10 +246,17 @@ class PlayerController:
         dx, dy = md.getX() - win.getXSize() // 2, md.getY() - win.getYSize() // 2
         self._recenter()
         self.viewer.mouse_dx, self.viewer.mouse_dy = dx, dy
-        if not agent.alive or autoplay:
+        if autoplay:
+            return
+        if agent.view_mode:
+            k = 0.022 * self.settings.sensitivity * 0.8
+            self.view_look[0] -= dx * k
+            self.view_look[1] -= dy * k
+            return
+        if not agent.alive:
             return
         zoom = 1.0
-        if agent.ads and agent.spec.ads_fov:
+        if agent.ads and agent.slot in agent.inv and agent.spec.ads_fov:
             zoom = math.tan(math.radians(agent.spec.ads_fov / 2)) / math.tan(math.radians(BASE_HFOV / 2))
         k = 0.022 * self.settings.sensitivity * zoom
         agent.yaw = (agent.yaw - dx * k) % 360.0
@@ -252,14 +277,29 @@ class PlayerController:
         act.fire = down(MouseButton.one()) or self.fire_latch
         rmb = down(MouseButton.three())
         act.alt = self.ads_state if self.settings.ads_toggle else (rmb or self.alt_latch)
-        if self.agent.spec.kind != "gun":
+        a = self.agent
+        if a.slot in a.inv and a.spec.kind != "gun":
             act.alt = rmb or self.alt_latch
+        act.lean = int(down(kb["e"])) - int(down(kb["q"]))
+        act.use = down(kb["f"]) or self.use_latch
+        act.gadget = down(kb["g"]) or self.gadget_latch
         act.switch = self.switch_req
+        if a.view_mode:
+            act.look_yaw, act.look_pitch = self.view_look
         return act
 
     def after_tick(self):
+        self.view_look = [0.0, 0.0]
         self.fire_latch = self.alt_latch = False
+        self.use_latch = self.gadget_latch = False
         self.switch_req = 0
+        if self.f_pending > 0:
+            self.f_pending -= 1
+            a = self.agent
+            if a.busy is not None or a.view_mode:
+                self.f_pending = 0
+            elif self.f_pending == 0 and a.alive:
+                self.viewer.inspect()
 
     def update_fps(self):
         self.fps_n += 1
@@ -329,7 +369,7 @@ class LocalSession:
         w = self.world
         humans = 1 + (len(self.server.players()) if self.server else 0)
         return {"players": humans, "slots": len(w.agents), "team_size": w.cfg.team_size,
-                "score": list(w.team_kills), "map": w.cfg.map_name, "host": self.settings.name}
+                "score": list(w.score), "map": w.cfg.map_name, "mode": w.cfg.mode, "host": self.settings.name}
 
     def _set_primary(self, name):
         return self.world.set_primary(self.world.agents[self.player], name)

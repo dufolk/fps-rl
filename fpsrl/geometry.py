@@ -59,3 +59,22 @@ def segments_hit_spheres(p, q, centers, radii):
     closest = p[:, None, :] + t[:, :, None] * d[:, None, :]
     dist2 = ((closest - c[None, :, :]) ** 2).sum(axis=2)
     return (dist2 < (rad[None, :] ** 2)).any(axis=1)
+
+
+def point_in_poly(x: float, y: float, poly) -> bool:
+    """Even-odd test of point (x, y) against polygon [[x, y], ...]."""
+    inside = False
+    n = len(poly)
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i][0], poly[i][1]
+        xj, yj = poly[j][0], poly[j][1]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def poly_center(poly):
+    a = np.asarray(poly, dtype=np.float64)
+    return a.mean(axis=0)

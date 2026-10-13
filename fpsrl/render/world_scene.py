@@ -17,14 +17,36 @@ SHADOW_MASK = BitMask32.bit(3)
 MAIN_MASK = BitMask32.bit(0)
 
 UV_SCALE = {"deck": 0.25, "superstructure": 1 / 3.0, "steel_plate": 1.0, "crate": 1 / 0.85,
-            "crate_big": 1 / 1.2, "hull": 0.25, "water": 0.02}
+            "crate_big": 1 / 1.2, "hull": 0.25, "water": 0.02, "sand": 0.15, "sand_dark": 0.15,
+            "sandstone": 0.4, "sandstone_dark": 0.4, "brick": 0.33, "brick_dark": 0.33, "asphalt": 0.12,
+            "grass": 0.15, "tile_floor": 0.5, "tile_white": 0.5, "marble": 0.25, "carpet": 0.33,
+            "carpet_blue": 0.33, "roof": 0.5, "roof_grey": 0.5, "concrete": 0.25, "concrete_dark": 0.25,
+            "wood_floor": 0.5, "wood_door": 0.8, "wood_planks": 0.8, "reinforce": 0.66, "vault": 1.0,
+            "stone_dark": 0.5}
 
 SURFACE_FOR = {"deck": "paint", "steel_plate": "metal", "crate": "wood", "crate_big": "wood",
                "superstructure": "paint", "hull": "paint", "bulwark": "paint", "parapet": "paint",
-               "mast": "paint", "funnel": "paint", "hatch": "paint"}
+               "mast": "paint", "funnel": "paint", "hatch": "paint", "sand": "cloth", "sand_dark": "cloth",
+               "sandstone": "cloth", "sandstone_dark": "cloth", "brick": "cloth", "brick_dark": "cloth",
+               "asphalt": "cloth", "grass": "cloth", "carpet": "cloth", "carpet_blue": "cloth",
+               "marble": "glass", "tile_floor": "paint", "tile_white": "paint", "wood_floor": "wood",
+               "wood_door": "wood", "wood_planks": "wood", "reinforce": "metal", "vault": "metal",
+               "metal": "metal", "metal_dark": "metal", "metal_door": "metal"}
 
-HORIZON = (0.78, 0.74, 0.7)
-ZENITH = (0.22, 0.4, 0.66)
+THEMES = {
+    "ship": dict(horizon=(0.78, 0.74, 0.7), zenith=(0.22, 0.4, 0.66), fog=0.0042, sun=(1.35, 1.18, 0.95),
+                 amb=(0.36, 0.4, 0.48), ground=None),
+    "desert": dict(horizon=(0.92, 0.82, 0.66), zenith=(0.3, 0.52, 0.8), fog=0.0032, sun=(1.5, 1.3, 1.0),
+                   amb=(0.46, 0.42, 0.4), ground="sand_dark"),
+    "town": dict(horizon=(0.8, 0.82, 0.84), zenith=(0.3, 0.48, 0.74), fog=0.0048, sun=(1.3, 1.22, 1.05),
+                 amb=(0.42, 0.44, 0.5), ground="grass"),
+    "bank": dict(horizon=(0.66, 0.68, 0.74), zenith=(0.22, 0.3, 0.48), fog=0.0055, sun=(1.1, 1.04, 0.96),
+                 amb=(0.56, 0.56, 0.6), ground="asphalt"),
+}
+
+HORIZON = THEMES["ship"]["horizon"]
+ZENITH = THEMES["ship"]["zenith"]
+SITE_COLORS = [(0.95, 0.25, 0.15, 1), (0.2, 0.55, 0.95, 1), (0.95, 0.8, 0.2, 1), (0.3, 0.85, 0.35, 1)]
 
 
 def _darker(c, k):
@@ -41,17 +63,30 @@ class WorldScene:
         self.ts_normal = TextureStage("normal")
         self.ts_normal.setMode(TextureStage.M_normal)
         self.animated = []
+        self.theme = THEMES.get(game_map.theme, THEMES["ship"])
+        (x0, y0), (x1, y1) = game_map.bounds
+        self.center = Vec3((x0 + x1) / 2, (y0 + y1) / 2, 0)
+        self.extent = max(x1 - x0, y1 - y0)
         self._build_lights(shadows, shadow_size)
         self._build_sky()
-        self._build_water()
+        ship = game_map.theme == "ship"
+        if ship:
+            self._build_water()
+        else:
+            self.water = None
+            self._build_ground()
         self._build_map()
-        self._build_container_details()
         self._build_props()
-        self._build_markings()
-        self._build_distant()
+        if ship:
+            self._build_container_details()
+            self._build_markings()
+            self._build_distant()
+        else:
+            self._build_distant_land()
+        self._build_objectives()
         fog = Fog("fog")
-        fog.setColor(*HORIZON)
-        fog.setExpDensity(0.0042)
+        fog.setColor(*self.theme["horizon"])
+        fog.setExpDensity(self.theme["fog"])
         base.render.setFog(fog)
         self.fog = fog
 
@@ -61,21 +96,22 @@ class WorldScene:
         d.normalize()
         self.sun_dir = d
         sun = DirectionalLight("sun")
-        sun.setColor(Vec4(1.35, 1.18, 0.95, 1))
+        sun.setColor(Vec4(*self.theme["sun"], 1))
         sun.setSpecularColor(Vec4(1.2, 1.1, 0.9, 1))
         if shadows:
             sun.setShadowCaster(True, size, size)
             sun.setCameraMask(SHADOW_MASK)
             sun.setInitialState(RenderState.make(CullFaceAttrib.makeReverse()))
             lens = sun.getLens()
-            lens.setFilmSize(118, 118)
-            lens.setNearFar(10, 260)
+            film = max(118.0, self.extent * 1.25)
+            lens.setFilmSize(film, film)
+            lens.setNearFar(10, 130 + film)
         self.sun_np = self.base.render.attachNewNode(sun)
-        self.sun_np.setPos(-d * 130)
-        self.sun_np.lookAt(0, 0, 0)
+        self.sun_np.setPos(self.center - d * (130 + self.extent * 0.3))
+        self.sun_np.lookAt(self.center)
         self.base.render.setLight(self.sun_np)
         amb = AmbientLight("ambient")
-        amb.setColor(Vec4(0.36, 0.4, 0.48, 1))
+        amb.setColor(Vec4(*self.theme["amb"], 1))
         self.amb_np = self.base.render.attachNewNode(amb)
         self.base.render.setLight(self.amb_np)
         fill = DirectionalLight("fill")
@@ -89,15 +125,17 @@ class WorldScene:
     def _build_sky(self):
         sun = -self.sun_dir
         mb = MeshBuilder("sky")
+        horizon = np.array(self.theme["horizon"])
+        zenith = np.array(self.theme["zenith"])
 
         def color(nx, ny, nz):
             up = max(nz, 0.0)
             t = up ** 0.45
-            c = np.array(HORIZON) * (1 - t) + np.array(ZENITH) * t
+            c = horizon * (1 - t) + zenith * t
             s = max(0.0, nx * sun.x + ny * sun.y + nz * sun.z)
             c = c + np.array([0.55, 0.38, 0.18]) * (s ** 8) * (1 - t * 0.6)
             if nz < 0:
-                c = np.array(HORIZON) * 0.92
+                c = horizon * 0.92
             return (float(c[0]), float(c[1]), float(c[2]), 1.0)
 
         mb.sphere((0, 0, 0), 1500.0, rings=24, segments=36, inward=True, color_fn=color)
@@ -173,13 +211,13 @@ class WorldScene:
     def _build_map(self):
         groups: dict[str, MeshBuilder] = {}
         for b in self.map.boxes:
-            if not b.visible:
+            if not b.visible or b.params.get("destruct"):
                 continue
             mat = b.mat
             mb = groups.setdefault(mat, MeshBuilder(mat))
             scale = UV_SCALE.get(mat, 0.5)
             skip = ()
-            if b.tag == "deck":
+            if b.tag in ("deck", "ground"):
                 skip = ("-z",)
             mb.box(b.mn, b.mx, (1, 1, 1, 1), uv_mode="world" if not mat.startswith("crate") else "local",
                    uv_scale=scale, skip=skip)
@@ -274,6 +312,19 @@ class WorldScene:
                 self.radars.append(bar)
             elif p.kind == "door":
                 n = M.build_door()
+            elif p.kind == "tree":
+                n = M.build_tree(p.params.get("seed", int(abs(p.pos[0] * 7 + p.pos[1] * 13))))
+            elif p.kind == "palm":
+                n = M.build_palm(p.params.get("seed", int(abs(p.pos[0] * 7 + p.pos[1] * 13))))
+            elif p.kind == "car":
+                n = M.build_car(p.params.get("color", (0.6, 0.12, 0.1)))
+            elif p.kind == "desk":
+                n = M.build_desk()
+            elif p.kind == "ceiling_light":
+                n, bulb = M.build_ceiling_light()
+                bulb.setLightOff(1)
+                bulb.setShaderOff(1)
+                bulb.setColorScale(1.5, 1.45, 1.3, 1)
             elif p.kind == "ship_bow_lights":
                 continue
             else:
@@ -282,6 +333,122 @@ class WorldScene:
             n.setPos(*p.pos)
             n.setH(yaw)
             n.flattenLight()
+
+    def _build_ground(self):
+        """Large textured ground plane around (and under) the playable area."""
+        mat = self.theme["ground"]
+        col, nrm = self.tex.get(mat)
+        mb = MeshBuilder("ground_far")
+        R = 900.0
+        cx, cy = self.center.x, self.center.y
+        z = -0.03
+        mb.quad((cx - R, cy - R, z), (cx + R, cy - R, z), (cx + R, cy + R, z), (cx - R, cy + R, z),
+                uv_mode="world", uv_scale=UV_SCALE.get(mat, 0.2))
+        node = mb.node()
+        node.reparentTo(self.root)
+        node.setTexture(col, 1)
+        node.setTexture(self.ts_normal, nrm, 1)
+        node.setMaterial(M.make_material("cloth"), 1)
+
+    def _build_distant_land(self):
+        theme = self.map.theme
+        rng = np.random.default_rng(11)
+        mb = MeshBuilder("distant")
+        cx, cy = self.center.x, self.center.y
+        r0 = self.extent * 0.75 + 30
+        if theme == "desert":
+            for k in range(36):
+                a = k / 36 * math.tau + rng.uniform(-0.05, 0.05)
+                r = r0 + rng.uniform(110, 220)
+                h = rng.uniform(10, 34)
+                rad = rng.uniform(40, 70)
+                mb.sphere((cx + math.cos(a) * r, cy + math.sin(a) * r, -h * 0.4), rad,
+                          (0.62, 0.5, 0.36, 1), 6, 10, scale=(1.0, 1.0, h / rad))
+            for k in range(14):
+                a = rng.uniform(0, math.tau)
+                r = r0 + rng.uniform(5, 40)
+                x, y = cx + math.cos(a) * r, cy + math.sin(a) * r
+                w, d, h = rng.uniform(6, 14), rng.uniform(6, 14), rng.uniform(4, 10)
+                mb.box((x, y, 0), (x + w, y + d, h), (0.78, 0.66, 0.48, 1))
+        elif theme == "town":
+            for k in range(30):
+                a = k / 30 * math.tau
+                r = r0 + rng.uniform(60, 160)
+                h = rng.uniform(20, 55)
+                mb.sphere((cx + math.cos(a) * r, cy + math.sin(a) * r, -h * 0.3), rng.uniform(50, 90),
+                          (0.22, 0.34, 0.18, 1), 6, 10, scale=(1.0, 1.0, h / 70))
+            for k in range(40):
+                a = rng.uniform(0, math.tau)
+                r = r0 + rng.uniform(0, 50)
+                x, y = cx + math.cos(a) * r, cy + math.sin(a) * r
+                w, d, h = rng.uniform(5, 10), rng.uniform(5, 10), rng.uniform(4, 9)
+                mb.box((x, y, 0), (x + w, y + d, h), (0.8, 0.76, 0.66, 1))
+                mb.box((x - 0.3, y - 0.3, h), (x + w + 0.3, y + d + 0.3, h + 0.6), (0.45, 0.2, 0.14, 1))
+                if k % 2:
+                    mb.sphere((x - 3, y - 3, 3), 2.6, (0.2, 0.34, 0.14, 1), 5, 8)
+        else:
+            for k in range(46):
+                a = k / 46 * math.tau + rng.uniform(-0.04, 0.04)
+                r = r0 + rng.uniform(10, 70)
+                x, y = cx + math.cos(a) * r, cy + math.sin(a) * r
+                w, d, h = rng.uniform(12, 30), rng.uniform(12, 30), rng.uniform(15, 70)
+                g = rng.uniform(0.4, 0.62)
+                mb.box((x, y, 0), (x + w, y + d, h), (g, g, g * 1.04, 1))
+                for z in np.arange(3.0, h - 2, 3.5):
+                    mb.box((x - 0.05, y + 1, z), (x + w + 0.05, y + d - 1, z + 1.4), (0.18, 0.22, 0.28, 1))
+        node = mb.node()
+        node.reparentTo(self.root)
+        node.setMaterial(M.make_material("paint"), 1)
+        node.hide(SHADOW_MASK)
+
+    def _build_objectives(self):
+        """Painted zone outlines + letters for domination points / bomb sites."""
+        from panda3d.core import TextNode
+        obj = self.map.objectives or {}
+        self.point_nodes = []
+        for kind in ("points", "sites"):
+            for i, z in enumerate(obj.get(kind, [])):
+                poly = z["poly"]
+                gz = z.get("z", z.get("zmin", 0.0)) + 0.02
+                color = (0.95, 0.95, 0.95, 1) if kind == "points" else SITE_COLORS[i % len(SITE_COLORS)]
+                mb = MeshBuilder(f"zone_{kind}_{i}")
+                n = len(poly)
+                w = 0.12
+                for k in range(n):
+                    (ax, ay), (bx, by) = poly[k], poly[(k + 1) % n]
+                    dx, dy = bx - ax, by - ay
+                    L = math.hypot(dx, dy) or 1.0
+                    nx, ny = -dy / L * w, dx / L * w
+                    mb.quad((ax - nx, ay - ny, gz), (bx - nx, by - ny, gz), (bx + nx, by + ny, gz),
+                            (ax + nx, ay + ny, gz), color=color)
+                node = mb.node()
+                node.reparentTo(self.root)
+                node.setLightOff(1)
+                node.setShaderOff(1)
+                node.setDepthOffset(2)
+                node.hide(SHADOW_MASK)
+                cxp = sum(p[0] for p in poly) / n
+                cyp = sum(p[1] for p in poly) / n
+                tn = TextNode(f"zone_label_{i}")
+                tn.setText(z.get("name", "?"))
+                tn.setAlign(TextNode.ACenter)
+                tn.setTextColor(*color[:3], 0.85)
+                t = self.root.attachNewNode(tn)
+                t.setPos(cxp, cyp - 0.6, gz + 0.01)
+                t.setP(-90)
+                t.setScale(2.4 if kind == "sites" else 1.6)
+                t.setLightOff(1)
+                t.setShaderOff(1)
+                t.setDepthOffset(2)
+                t.setTransparency(TransparencyAttrib.M_alpha)
+                t.hide(SHADOW_MASK)
+                if kind == "points":
+                    self.point_nodes.append((node, t))
+
+    def set_point_colors(self, colors):
+        for (node, label), c in zip(self.point_nodes, colors):
+            node.setColorScale(*c)
+            label.setColorScale(*c)
 
     def _build_markings(self):
         mb = MeshBuilder("markings")
@@ -339,10 +506,20 @@ class WorldScene:
         node.setMaterial(M.make_material("paint"), 1)
         node.hide(SHADOW_MASK)
 
+    def destroy(self):
+        r = self.base.render
+        for np_ in (self.sun_np, self.amb_np, self.fill_np):
+            r.clearLight(np_)
+            np_.removeNode()
+        r.clearFog()
+        self.sky.removeNode()
+        self.root.removeNode()
+
     # ------------------------------------------------------------------ update
     def update(self, t: float):
-        self.water.setTexOffset(TextureStage.getDefault(), t * 0.004, t * 0.002)
-        self.water.setTexOffset(self.ts_normal, -t * 0.006, t * 0.003)
+        if self.water is not None:
+            self.water.setTexOffset(TextureStage.getDefault(), t * 0.004, t * 0.002)
+            self.water.setTexOffset(self.ts_normal, -t * 0.006, t * 0.003)
         self.clouds.setTexOffset(TextureStage.getDefault(), t * 0.0015, 0)
         for r in self.radars:
             r.setH(t * 90.0)

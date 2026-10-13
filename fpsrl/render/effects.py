@@ -267,9 +267,9 @@ class Effects:
         self.smoke_clouds.clear()
 
     # ------------------------------------------------------------------ events
-    def muzzle(self, pos, direction, big=False, light=True):
+    def muzzle(self, pos, direction, big=False, light=True, small=False):
         d = Vec3(*direction)
-        s = 0.55 if big else 0.38
+        s = 0.55 if big else (0.16 if small else 0.38)
         self.flash.emit(Point3(*pos) + d * 0.08, life=0.05, size0=s, size1=s * 1.3, c0=(1, 0.9, 0.7, 1),
                         c1=(1, 0.6, 0.2, 0))
         for _ in range(2):
@@ -333,6 +333,24 @@ class Effects:
                            random.uniform(1.0, 1.6), random.uniform(3.5, 5.5), (0.22, 0.2, 0.18, 0.75),
                            (0.35, 0.33, 0.3, 0.0), grav=-0.5, drag=1.8)
         self.scorches.place(Point3(p.x, p.y, p.z - 0.05), Vec3(0, 0, 1))
+
+    def debris(self, pos, mat=""):
+        """Breaking wall panel: chunks + dust cloud."""
+        p = Point3(*pos)
+        wood = "wood" in (mat or "")
+        chunk = (0.45, 0.32, 0.18) if wood else (0.75, 0.72, 0.66)
+        for _ in range(10):
+            v = Vec3(random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(0.0, 1.0)) * random.uniform(2, 5)
+            self.sparks.emit(p, v, random.uniform(0.5, 1.0), 0.07, 0.05, (*chunk, 1), (*chunk, 0.6), grav=12.0)
+        for _ in range(8):
+            v = Vec3(random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(-0.2, 0.6))
+            self.dust.emit(p, v * random.uniform(0.4, 1.4), random.uniform(1.2, 2.2), 0.4, random.uniform(1.0, 1.6),
+                           (*chunk, 0.6), (*chunk, 0.0), grav=-0.2, drag=2.0)
+
+    def flashbang(self, pos):
+        p = Point3(*pos)
+        self.lights.flash(p + Vec3(0, 0, 0.3), (30, 30, 30), 0.12, atten=0.02)
+        self.flash.emit(p, life=0.1, size0=1.5, size1=4.0, c0=(1, 1, 1, 1), c1=(1, 1, 1, 0))
 
     def smoke_grenade(self, sid, pos, radius, duration):
         self.smoke_clouds[sid] = {"pos": Point3(*pos), "radius": radius, "t": 0.0, "dur": duration,

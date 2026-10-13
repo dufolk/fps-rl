@@ -9,7 +9,7 @@ import numpy as np
 from panda3d.core import Filename
 
 SR = 44100
-SYNTH_VERSION = "4"
+SYNTH_VERSION = "5"
 CUSTOM_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "custom_sfx")
 
 
@@ -229,6 +229,32 @@ def build_library() -> dict[str, np.ndarray]:
         "kill_nade": grenade_accent(),
         "ui_click": ui_click(),
         "ui_hover": ui_hover(),
+        # extended arsenal
+        "m4a4": gunshot(0.7, 6500, 1600, 90, 0.2, 2.4, 31),
+        "m4a1": _norm(_lowpass(gunshot(0.35, 3500, 1200, 70, 0.06, 1.2, 32, crack_decay=0.004,
+                                       body_decay=0.02), 3200), 0.55),
+        "famas": gunshot(0.65, 6800, 1800, 95, 0.18, 2.3, 33),
+        "mp5": gunshot(0.5, 5200, 1900, 120, 0.12, 1.9, 34, body_decay=0.035),
+        "mp9": gunshot(0.45, 5600, 2100, 130, 0.1, 1.8, 35, body_decay=0.03),
+        "uzi": gunshot(0.45, 4800, 1800, 125, 0.1, 2.0, 36, body_decay=0.03),
+        "dualies": gunshot(0.45, 5800, 2000, 140, 0.1, 1.9, 37, body_decay=0.03),
+        "scar20": gunshot(1.0, 7000, 1200, 70, 0.32, 2.9, 38, crack_decay=0.012, body_decay=0.07),
+        "m249": gunshot(0.8, 5500, 1200, 75, 0.25, 2.8, 39),
+        # objectives / gadgets
+        "beep": tone((2600,), 0.09, 0.03),
+        "plant_done": compose(0.5, [(0.0, tone((1800, 2700), 0.2, 0.06), 1.0), (0.18, click(2200, 0.1, 40), 0.6)]),
+        "defuse_tick": click(3000, 0.05, 41, 0.004),
+        "bomb_explode": _norm(explosion(91) + np.pad(explosion(92), (int(0.05 * SR), 0))[:len(explosion(91))], 0.95),
+        "capture": tone((880, 1320, 1760), 0.45, 0.15),
+        "lost": tone((440, 330), 0.45, 0.15),
+        "round_win": tone((660, 880, 1320), 0.7, 0.25),
+        "round_lose": tone((440, 370, 294), 0.7, 0.25),
+        "flash_bang": compose(1.0, [(0.0, explosion(93), 0.6), (0.0, tone((3800,), 1.0, 0.6), 0.25)]),
+        "wall_break": compose(0.45, [(0.0, thud(110, 0.3, 42), 1.0), (0.02, whoosh(0.25, 300, 2500, 43), 0.6),
+                                     (0.05, click(1400, 0.2, 44, 0.04, 0.9), 0.5)]),
+        "reinforce": compose(0.6, [(0.0, click(900, 0.2, 45, 0.05, 0.3), 1.0), (0.25, thud(80, 0.3, 46), 0.8)]),
+        "drone": hiss(0.6, 47) * 0.4,
+        "buy": compose(0.2, [(0.0, click(2000, 0.08, 48), 0.8), (0.06, click(3000, 0.06, 49), 0.6)]),
     }
     for k in range(1, 7):
         lib[f"kill_{k}"] = kill_sting(k, 70 + k)
@@ -266,7 +292,8 @@ def ensure_sounds(cache_dir: str) -> dict[str, str]:
     return paths
 
 
-POOL = {"ak47": 8, "awm": 4, "deagle": 6, "step0": 3, "step1": 3, "step2": 3, "step3": 3, "hit": 4,
+POOL = {"ak47": 8, "awm": 4, "deagle": 6, "m4a4": 8, "m4a1": 8, "famas": 8, "mp5": 8, "mp9": 8, "uzi": 8,
+        "dualies": 6, "scar20": 6, "m249": 10, "step0": 3, "step1": 3, "step2": 3, "step3": 3, "hit": 4,
         "impact_metal": 4, "flesh": 4, "bounce": 3, "explosion": 3}
 
 

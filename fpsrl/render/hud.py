@@ -173,6 +173,42 @@ class HUD:
         self.board.hide()
         self.flash_white = 0.0
         self.end_hint = "按 F5 重新开始" if self.cjk else "Press F5 to restart"
+        # objectives (under the score panel)
+        cf = self.font_cjk or f
+        self.obj_root = top.attachNewNode("objectives")
+        self.obj_cells = []
+        for i in range(3):
+            x = (i - 1) * 0.13
+            bg = _rect(self.obj_root, (0.1, 0.1, 0.1, 0.6), x - 0.05, x + 0.05, -0.25, -0.15)
+            fill = _rect(self.obj_root, (1, 1, 1, 0.8), 0.0, 0.1, 0.0, 0.1)
+            fill.setPos(x - 0.05, 0, -0.25)
+            label = text("ABC"[i], (x, -0.218), 0.05, parent=self.obj_root)
+            self.obj_cells.append((bg, fill, label))
+        self.phase_text = text("", (0, -0.2), 0.04, (1, 0.9, 0.55, 1), parent=self.score_panel, font=cf)
+        self.money_text = text("", (0.06, 0.24), 0.05, (0.45, 1.0, 0.5, 1), TextNode.ALeft, parent=self.hp_panel)
+        self.armor_text = text("", (0.33, 0.165), 0.03, (0.6, 0.8, 1.0, 1), TextNode.ALeft, parent=self.hp_panel)
+        # hold-action progress
+        self.busy_root = self.root.attachNewNode("busy")
+        _rect(self.busy_root, (0, 0, 0, 0.55), -0.3, 0.3, -0.33, -0.27)
+        self.busy_bar = _rect(self.busy_root, (1.0, 0.75, 0.25, 0.95), 0.0, 0.58, 0.0, 0.04)
+        self.busy_bar.setPos(-0.29, 0, -0.32)
+        self.busy_label = text("", (0, -0.24), 0.04, parent=self.busy_root, font=cf)
+        self.busy_root.hide()
+        self.prompt_text = text("", (0, -0.42), 0.042, (1, 1, 1, 0.95), font=cf)
+        self.view_text = text("", (0, -0.85), 0.04, (0.7, 1.0, 0.7, 1), font=cf)
+        # round banner
+        self.round_text = text("", (0, 0.42), 0.085, font=cf)
+        self.round_sub = text("", (0, 0.34), 0.045, (0.9, 0.9, 0.9, 1), font=cf)
+        self.round_t = 0.0
+        # flashbang
+        self.flash_card = _rect(base.render2d, (1, 1, 1, 1), -1, 1, -1, 1, "flash_card")
+        self.flash_card.setColorScale(1, 1, 1, 0)
+
+    def show_round(self, title, sub="", duration=3.5, color=(1, 1, 1, 1)):
+        self.round_text.setText(title)
+        self.round_text.setFg(color)
+        self.round_sub.setText(sub)
+        self.round_t = duration
 
     # ------------------------------------------------------------------ events
     def on_event(self, e, world):
@@ -213,6 +249,52 @@ class HUD:
                 self.hide_inspect()
         elif t == "spawn" and e["agent"] == me:
             self.banner.reset_streak()
+        else:
+            self._mode_event(e, world)
+
+    def _mode_event(self, e, world):
+        t = e["type"]
+        zh = self.cjk
+        me = world.agents[self.local_id]
+        mode = world.mode
+        if t == "round_start":
+            n = e["round"]
+            side = mode.side(me.team)
+            if mode.name == "r6":
+                role = ("进攻方" if side == 0 else "防守方") if zh else ("ATTACK" if side == 0 else "DEFEND")
+                sub = ("准备阶段: 无人机侦查 / 加固墙体" if zh else "Prep phase: drone / reinforce")
+            else:
+                role = ("潜伏者 (T)" if side == 0 else "保卫者 (CT)") if zh else ("TERRORISTS" if side == 0 else "COUNTER-TERRORISTS")
+                sub = ("B 键购买武器" if zh else "Press B to buy")
+            self.show_round((f"第 {n} 回合" if zh else f"ROUND {n}"), f"{role}   ·   {sub}", 3.0)
+        elif t == "round_end":
+            won = e["team"] == me.team
+            reasons = {"elimination": ("全歼敌人", "Enemies eliminated"), "time": ("时间耗尽", "Time ran out"),
+                       "bomb": ("目标已摧毁", "Target destroyed"), "defuse": ("炸弹已拆除", "Bomb defused"),
+                       "defuser": ("拆弹器已完成", "Defuser secured")}
+            r = reasons.get(e["reason"], (e["reason"], e["reason"]))
+            title = ("回合胜利" if won else "回合失败") if zh else ("ROUND WON" if won else "ROUND LOST")
+            self.show_round(title, r[0] if zh else r[1], 4.0, (0.5, 1, 0.55, 1) if won else (1, 0.45, 0.4, 1))
+        elif t == "bomb_planted":
+            label = "拆弹器已安放" if mode.name == "r6" else "炸弹已安放"
+            self.show_round(label if zh else ("DEFUSER PLANTED" if mode.name == "r6" else "BOMB PLANTED"), "", 2.5,
+                            (1, 0.6, 0.3, 1))
+        elif t == "side_swap":
+            self.show_round("交换攻守" if zh else "SWITCHING SIDES", "", 3.0)
+        elif t == "overtime":
+            self.show_round("加时赛" if zh else "OVERTIME", "", 3.0)
+        elif t == "point_captured":
+            name = e.get("name", "?")
+            ours = e["team"] == me.team
+            msg = (f"已占领 {name} 点" if ours else f"{name} 点失守") if zh else \
+                (f"Captured {name}" if ours else f"Lost {name}")
+            self.show_round(msg, "", 1.8, (0.5, 1, 0.55, 1) if ours else (1, 0.45, 0.4, 1))
+        elif t == "hint" and e["agent"] == self.local_id:
+            hints = {"not_in_site": ("需在包点内安放", "Must be in a bomb site"),
+                     "need_soft_wall": ("需对准可破坏墙体", "Aim at a breakable wall"),
+                     "need_door": ("需靠近门窗", "Move to a doorway or window")}
+            h = hints.get(e["text"], (e["text"], e["text"]))
+            self.set_info(h[0] if zh else h[1])
 
     def show_inspect(self, title: str, sub: str, color, duration: float = 3.0):
         self.inspect_title.setText(title)
@@ -226,7 +308,8 @@ class HUD:
         self.inspect_root.hide()
 
     # ------------------------------------------------------------------ update
-    def update(self, dt, world, agent, vfov_deg, show_board=False, scope_active=False, spectating=None):
+    def update(self, dt, world, agent, vfov_deg, show_board=False, scope_active=False, spectating=None,
+               first_person=True):
         now = world.time
         self.banner.update(dt)
         if self.inspect_t > 0:
@@ -234,10 +317,15 @@ class HUD:
             self.inspect_root.setAlphaScale(min(1.0, self.inspect_t / 0.4))
             if self.inspect_t <= 0:
                 self.inspect_root.hide()
+        if agent.slot not in agent.inv:
+            return
+        self._update_mode(dt, world, agent)
         # crosshair
         spec = agent.spec
-        show_cross = agent.alive and not scope_active and not (spec.kind == "gun" and agent.ads and spec.name == "awm")
-        if show_cross and spec.kind == "gun" and not (agent.ads and spec.ads_fov):
+        sights = agent.ads and spec.ads_fov and first_person
+        show_cross = agent.alive and not scope_active and not agent.view_mode \
+            and not (spec.kind == "gun" and sights and spec.scope_overlay)
+        if show_cross and spec.kind == "gun" and not sights:
             self.cross.show()
             spread = world.current_spread(agent)
             gap = math.tan(math.radians(spread)) / math.tan(math.radians(vfov_deg / 2)) + 0.012
@@ -290,7 +378,7 @@ class HUD:
             if agent.reloading:
                 p = 1.0 - (agent.reload_until - now) / spec.reload_time
                 self.reserve_text.setText(f"RELOADING {int(p * 100)}%")
-        elif spec.kind == "grenade":
+        elif spec.kind in ("grenade", "gadget", "shield"):
             self.ammo_text.setText(str(ws.mag))
             self.ammo_text.setFg((1, 1, 1, 1))
             self.reserve_text.setText("")
@@ -298,10 +386,26 @@ class HUD:
             self.ammo_text.setText("--")
             self.ammo_text.setFg((1, 1, 1, 1))
             self.reserve_text.setText("")
-        self.nade_text.setText(f"[4] HE x{agent.inv[SLOT_FRAG].mag}    [5] SMOKE x{agent.inv[SLOT_SMOKE].mag}")
-        self.score_l.setText(str(world.team_kills[0]))
-        self.score_r.setText(str(world.team_kills[1]))
-        if world.cfg.time_limit:
+        items = []
+        for s in range(4, 8):
+            w = agent.inv.get(s)
+            if w is not None:
+                n = f" x{w.mag}" if w.spec.kind in ("grenade", "gadget", "shield") else ""
+                items.append(f"[{s}] {w.spec.display.upper()}{n}")
+        self.nade_text.setText("   ".join(items))
+        score = world.score
+        self.score_l.setText(str(score[0]))
+        self.score_r.setText(str(score[1]))
+        mode = world.mode
+        if hasattr(mode, "time_left") and mode.name in ("bomb", "r6"):
+            left = mode.time_left()
+            if mode.phase == "planted":
+                self.timer_text.setText("C4")
+                self.timer_text.setFg((1, 0.35, 0.3, 1) if int(now * 2) % 2 else (1, 0.8, 0.3, 1))
+            else:
+                self.timer_text.setText(f"{int(left // 60)}:{int(left % 60):02d}")
+                self.timer_text.setFg((1, 1, 1, 1))
+        elif world.cfg.time_limit:
             left = max(0.0, world.cfg.time_limit - now)
             self.timer_text.setText(f"{int(left // 60)}:{int(left % 60):02d}")
         else:
@@ -354,13 +458,121 @@ class HUD:
         if show_board:
             self.board.show()
             for k in (0, 1):
-                rows = [f"{TEAM_NAMES[k]}   {world.team_kills[k]}", "", "Name        K    D    HS"]
+                eco = world.mode.name == "bomb"
+                rows = [f"{TEAM_NAMES[k]}   {world.score[k]}", "",
+                        "Name        K    D    HS" + ("     $" if eco else "")]
+                mine = world.agents[self.local_id].team
                 for a in sorted((a for a in world.agents if a.team == k), key=lambda a: -a.kills):
                     mark = " <" if a.id == self.local_id else ""
-                    rows.append(f"{a.name:<10} {a.kills:>3}  {a.deaths:>3}  {a.headshots:>3}{mark}")
+                    money = f"  {a.money:>5}" if eco and a.team == mine else ""
+                    op = f" {a.operator}" if a.operator and world.mode.name == "r6" else ""
+                    rows.append(f"{a.name:<10} {a.kills:>3}  {a.deaths:>3}  {a.headshots:>3}{money}{op}{mark}")
                 self.board_text[k].setText("\n".join(rows))
         else:
             self.board.hide()
+
+    def _update_mode(self, dt, world, agent):
+        zh = self.cjk
+        mode = world.mode
+        now = world.time
+        # round banner
+        if self.round_t > 0:
+            self.round_t -= dt
+            a = min(1.0, self.round_t / 0.5)
+            self.round_text.setAlphaScale(a)
+            self.round_sub.setAlphaScale(a)
+            if self.round_t <= 0:
+                self.round_text.setText("")
+                self.round_sub.setText("")
+        # domination cells
+        if mode.name == "dom" and mode.points:
+            self.obj_root.show()
+            for i, (bg, fill, label) in enumerate(self.obj_cells):
+                for n in (bg, fill, label):
+                    n.show() if i < len(mode.points) else n.hide()
+                if i >= len(mode.points):
+                    continue
+                label.setText(mode.points[i]["name"])
+                own = mode.owner[i]
+                prog = mode.progress[i]
+                k = abs(prog)
+                team = 0 if prog > 0 else 1
+                c = TEAM_COLORS[team]
+                fill.setColor(c[0], c[1], c[2], 0.85 if own >= 0 else 0.5)
+                fill.setSz(max(k, 0.001))
+                n0, n1 = mode.present[i]
+                bg.setColor(*(((0.9, 0.9, 0.2, 0.7) if n0 and n1 else (0.1, 0.1, 0.1, 0.6))))
+        else:
+            self.obj_root.hide()
+        # phase / economy
+        phase = ""
+        if mode.name in ("bomb", "r6"):
+            names = {"freeze": ("冻结时间", "FREEZE TIME"), "prep": ("准备阶段", "PREPARATION"),
+                     "live": ("", ""), "planted": ("炸弹已安放" if mode.name == "bomb" else "拆弹器已安放",
+                                                  "BOMB PLANTED" if mode.name == "bomb" else "DEFUSER PLANTED"),
+                     "over": ("回合结束", "ROUND OVER")}
+            phase = names.get(mode.phase, ("", ""))[0 if zh else 1]
+            if mode.name == "bomb" and mode.can_buy_now(agent):
+                left = mode.state().get("buy_left", 0.0)
+                phase = (phase + "   " if phase else "") + (f"购买 {left:.0f}s [B]" if zh else f"BUY {left:.0f}s [B]")
+            if mode.name == "r6":
+                side = mode.side(agent.team)
+                extra = []
+                if side == 1:
+                    extra.append((f"加固 {mode.reinforce_left}" if zh else f"REINFORCE {mode.reinforce_left}"))
+                else:
+                    extra.append((f"无人机 {world.gadgets.drones_left.get(agent.id, 0)}" if zh else
+                                  f"DRONES {world.gadgets.drones_left.get(agent.id, 0)}"))
+                phase = (phase + "   " if phase else "") + "  ".join(extra)
+        self.phase_text.setText(phase)
+        self.money_text.setText(f"${agent.money}" if mode.name == "bomb" else "")
+        op = ""
+        if mode.name == "r6" and agent.operator:
+            from ..operators import OPERATORS
+            o = OPERATORS.get(agent.operator)
+            op = (o.zh if zh else o.name.upper()) if o else ""
+        self.armor_text.setText(" ".join(x for x in (op, ("护甲" if zh else "ARMOR") if agent.armor > 0 else "") if x))
+        # hold action progress
+        if agent.busy is not None:
+            kind, t0, dur = agent.busy[0], agent.busy[1], agent.busy[2]
+            k = min(1.0, max(0.0, (now - t0) / max(dur, 1e-3)))
+            labels = {"plant": ("安放中", "PLANTING"), "defuse": ("拆除中", "DEFUSING"),
+                      "reinforce": ("加固中", "REINFORCING"), "barricade": ("设置路障", "BARRICADING"),
+                      "place": ("部署中", "DEPLOYING")}
+            self.busy_label.setText(labels.get(kind, (kind, kind))[0 if zh else 1])
+            self.busy_bar.setSx(max(k, 0.001))
+            self.busy_root.show()
+        else:
+            self.busy_root.hide()
+        # contextual prompt
+        prompt = ""
+        if agent.alive and agent.busy is None and mode.name in ("bomb", "r6"):
+            b = mode.bomb
+            side = mode.side(agent.team)
+            if b and b["state"] == "planted" and side == 1 and \
+                    math.hypot(agent.pos[0] - b["pos"][0], agent.pos[1] - b["pos"][1]) < 1.5:
+                prompt = "按住 F 拆除" if zh else "Hold F to defuse"
+            elif b and b["state"] == "carried" and b["carrier"] == agent.id and mode.phase == "live" \
+                    and mode.site_at(agent.pos) >= 0:
+                prompt = "按住 F 或左键 安放" if zh else "Hold F / LMB to plant"
+        self.prompt_text.setText(prompt)
+        # gadget view overlay
+        if agent.view_mode == 1:
+            self.view_text.setText("无人机 · WASD 移动 · 空格 跳 · 左键 标记 · G 返回" if zh else
+                                   "DRONE · WASD move · SPACE jump · LMB spot · G exit")
+        elif agent.view_mode == 2:
+            self.view_text.setText("摄像头 · 左键 标记 · 右键 下一个 · G 返回" if zh else
+                                   "CAMERA · LMB spot · RMB next · G exit")
+        else:
+            self.view_text.setText("")
+        # flashbang
+        if now < agent.flash_until:
+            total = max(agent.flash_until - agent.flash_t0, 1e-3)
+            left = agent.flash_until - now
+            a = min(1.0, left / min(1.2, total)) if left < 1.2 else 1.0
+            self.flash_card.setColorScale(1, 1, 1, a * 0.97)
+        else:
+            self.flash_card.setColorScale(1, 1, 1, 0)
 
     def set_help(self, text: str):
         self.help_text.setText(text)
@@ -385,6 +597,8 @@ class HUD:
             self.inspect_root.hide()
 
     def destroy(self):
+        self.flash_card.removeNode()
+        self.obj_root.removeNode()
         self.banner.destroy()
         self.inspect_root.removeNode()
         self.root.removeNode()

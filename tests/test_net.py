@@ -26,13 +26,15 @@ def _wait(pred, timeout=3.0):
 def test_input_roundtrip():
     w = World(MatchConfig(team_size=1, seed=1))
     a = w.agents[0]
-    act = Action(move_forward=1.0, move_right=-0.5, fire=True, crouch=True, switch=3)
+    act = Action(move_forward=1.0, move_right=-0.5, fire=True, crouch=True, switch=7, lean=-1, use=True)
     inp = decode_input(encode_input(7, act, (a.yaw + 30) % 360, a.pitch - 10, 1.5))
     back = input_to_action(inp, a)
-    assert inp["seq"] == 7 and back.fire and back.crouch and not back.jump and back.switch == 3
+    assert inp["seq"] == 7 and back.fire and back.crouch and not back.jump and back.switch == 7
+    assert back.lean == -1 and back.use and not back.gadget
     assert abs(back.look_yaw - 30) < 1e-2 and abs(back.look_pitch + 10) < 1e-2
-    bad = decode_input([1, 9, -9, 1000, 500, 0, 99, 0])
+    bad = decode_input([1, 9, -9, 1000, 500, 0, 99, 0, 5, 1000, -1000])
     assert bad["mf"] == 1.0 and bad["mr"] == -1.0 and bad["pitch"] == 89.0 and bad["sw"] == 0
+    assert bad["lean"] == 1 and bad["vy"] == 90.0 and bad["vp"] == -90.0
 
 
 def test_state_mirror():

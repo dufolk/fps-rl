@@ -15,11 +15,12 @@ from panda3d.core import (AntialiasAttrib, FrameBufferProperties, GraphicsOutput
 
 from .. import config as C
 from ..geometry import raycast_boxes
-from ..sim import World
+from ..sim import LEAN_DIST, LEAN_ROLL, World, dir_from_angles
 from ..weapons import WEAPONS
 from .effects import Effects
 from .models import ModelCache, SoldierModel
 from .textures import TextureLibrary
+from .dynamic_view import DestructView, GadgetView, point_colors
 from .world_scene import MAIN_MASK, WorldScene
 
 ASSET_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
@@ -110,7 +111,11 @@ class Viewer:
         base.setBackgroundColor(0.78, 0.74, 0.7, 1)
         self.render = base.render
         self.world = world
+        self.shadows = shadows
         self.scene = WorldScene(base, world.map, self.textures, shadows=shadows)
+        self.destruct_view = None
+        self.gadget_view = None
+        self.bomb_beep_at = 0.0
         self.effects = Effects(base, self.textures)
         self.hud_font = None
         self.hud = None
@@ -134,6 +139,8 @@ class Viewer:
         self.proj_nodes: dict[int, NodePath] = {}
         self.pov = pov
         self.third_person = False
+        self.tp_ads = 0.0
+        self.first_person_now = True  # camera currently at the pov agent's eye
         self.event_seq = 0
         self.shake = 0.0
         self.t = 0.0
@@ -160,10 +167,19 @@ class Viewer:
             sv.model.root.removeNode()
         for n in self.proj_nodes.values():
             n.removeNode()
+        if world.map.name != self.scene.map.name:
+            self.scene.destroy()
+            self.scene = WorldScene(self.base, world.map, self.textures, shadows=self.shadows)
         self.world = world
         self.pov = pov
         if self.hud is not None:
             self.hud.local_id = pov
+        if self.destruct_view is not None:
+            self.destruct_view.root.removeNode()
+            self.gadget_view.root.removeNode()
+        self.destruct_view = DestructView(self.scene.root, world, self.textures, self.scene.ts_normal)
+        self.gadget_view = GadgetView(self.scene.root, world, self.textures, self.scene.ts_normal, self.models)
+        self.bomb_beep_at = 0.0
         self.soldiers = {a.id: SoldierView(self, a) for a in world.agents}
         self.proj_nodes = {}
         self.event_seq = world.event_log[-1]["seq"] if world.event_log else 0
@@ -245,11 +261,20 @@ class Viewer:
         self.cine_t += dt
         t = self.cine_t * 0.045
         cam = self.base.camera
-        x = math.sin(t) * 34.0
-        y = -24.0 + math.cos(t * 0.7) * 6.0
-        z = 9.0 + math.sin(t * 1.3) * 2.5
+        c = self.scene.center
+        r = self.scene.extent * 0.42
+        if self.world.map.theme == "ship":
+            x = math.sin(t) * 34.0
+            y = -24.0 + math.cos(t * 0.7) * 6.0
+            z = 9.0 + math.sin(t * 1.3) * 2.5
+            look = Point3(x * 0.55, 0.0, 1.0)
+        else:
+            x = c.x + math.sin(t) * r
+            y = c.y - math.cos(t) * r
+            z = 14.0 + self.scene.extent * 0.08 + math.sin(t * 1.3) * 2.5
+            look = Point3(c.x + (x - c.x) * 0.2, c.y + (y - c.y) * 0.2, 1.0)
         cam.setPos(x, y, z)
-        cam.lookAt(Point3(x * 0.55, 0.0, 1.0))
+        cam.lookAt(look)
         if abs(self.fov - 70.0) > 0.01:
             self.fov = 70.0
             self.base.camLens.setFov(self.fov)
@@ -280,7 +305,7 @@ class Viewer:
             return
         self.event_seq = evs[-1]["seq"]
         me = self.pov
-        fp = not self.third_person and not self.cinematic
+        fp = self.first_person_now and not self.cinematic
         for e in evs:
             t = e["type"]
             if self.hud is not None:
@@ -300,7 +325,10 @@ class Viewer:
                     d = end - origin
                     if d.length() > 0:
                         d.normalize()
-                    self.effects.muzzle(start, d, big=e["weapon"] == "awm")
+                    if WEAPONS[e["weapon"]].silenced:
+                        self.effects.muzzle(start, d, light=False, small=True)
+                    else:
+                        self.effects.muzzle(start, d, big=e["weapon"] in ("awm", "scar20", "m249"))
                 if not own or random.random() < 0.6:
                     self.effects.tracer(start, end)
                 if e["hit_agent"] is not None:
@@ -311,7 +339,8 @@ class Viewer:
                 elif e["mat"] is not None:
                     self.effects.impact(end, e["normal"], e["mat"])
                     if random.random() < 0.5:
-                        self._sound("impact_metal" if not e["mat"].startswith("crate") else "impact_wood",
+                        soft = e["mat"].startswith(("crate", "wood", "drywall", "plaster", "carpet"))
+                        self._sound("impact_metal" if not soft else "impact_wood",
                                     end, 0.35, random.uniform(0.85, 1.2), 4.0)
                 vol = 0.75 if own else 1.0
                 self._sound(e["weapon"], origin, vol, random.uniform(0.95, 1.05), 9.0 if not own else 30.0)
@@ -383,6 +412,51 @@ class Viewer:
             elif t == "dry_fire":
                 if e["agent"] == me:
                     self._sound("dry", None, 0.7)
+            elif t == "flash":
+                p = Point3(*e["pos"])
+                if e.get("shield"):
+                    self._sound("flash_bang", p, 0.5, 1.4, 6.0)
+                else:
+                    self.effects.flashbang(p)
+                    self._sound("flash_bang", p, 1.0, 1.0, 12.0)
+            elif t == "wall_break":
+                p = Point3(*e["pos"])
+                self.effects.debris(p, e.get("mat", ""))
+                self._sound("wall_break", p, 0.7, random.uniform(0.9, 1.1), 8.0)
+            elif t == "reinforce":
+                self._sound("reinforce", Point3(*e["pos"]), 0.8, 1.0, 8.0)
+            elif t in ("buy", "armor"):
+                if e["agent"] == me:
+                    self._sound("buy", None, 0.6)
+            elif t == "busy":
+                a = w.agents[e["agent"]]
+                self._sound("defuse_tick" if e["kind"] == "defuse" else "beep", Point3(*a.eye()), 0.6, 1.0, 6.0)
+            elif t == "bomb_planted":
+                self._sound("plant_done", Point3(*e["pos"]), 1.0, 1.0, 14.0)
+                self.bomb_beep_at = w.time + 1.0
+            elif t == "bomb_defused":
+                self._sound("plant_done", None, 0.8, 0.8)
+            elif t == "bomb_explode":
+                p = Point3(*e["pos"])
+                self.effects.explosion(p)
+                self.effects.explosion(p + Vec3(0, 0, 1.5))
+                self._sound("bomb_explode", p, 1.0, 1.0, 40.0)
+                d = (self.base.camera.getPos(self.render) - p).length()
+                self.shake = max(self.shake, max(0.0, 1.0 - d / 45.0) * 2.5)
+            elif t == "point_captured":
+                mine = w.agents[me].team
+                self._sound("capture" if e["team"] == mine else "lost", None, 0.7)
+            elif t == "round_end":
+                self._sound("round_win" if e["team"] == w.agents[me].team else "round_lose", None, 0.7)
+            elif t == "drone_deploy":
+                self._sound("drone", Point3(*w.agents[e["agent"]].eye()), 0.6)
+            elif t in ("gadget_placed", "launch"):
+                a = w.agents[e["agent"]]
+                self._sound("pin" if t == "gadget_placed" else "knife_swing", Point3(*a.eye()), 0.6)
+            elif t == "gadget_destroyed":
+                p = Point3(*e["pos"])
+                self.effects.impact(p, (0, 0, 1), "steel_plate")
+                self._sound("impact_metal", p, 0.7)
             elif t == "spawn":
                 pass
         # deferred sounds
@@ -419,8 +493,9 @@ class Viewer:
                     sv.tag_node.setText(a.name)
                 crouch = (C.STAND_HEIGHT - a.height) / (C.STAND_HEIGHT - C.CROUCH_HEIGHT)
                 speed = math.hypot(a.vel[0], a.vel[1])
-                m.pose(dt, speed, crouch, a.pitch + a.punch[0], a.on_ground)
-                hidden = a.id == self.pov and not self.third_person and not self.cinematic
+                m.pose(dt, speed, crouch, a.pitch + a.punch[0], a.on_ground,
+                       a.lean_off / LEAN_DIST if LEAN_DIST else 0.0)
+                hidden = a.id == self.pov and self.first_person_now and not self.cinematic
                 if hidden:
                     m.root.hide()
                 else:
@@ -469,24 +544,29 @@ class Viewer:
         self.shake *= math.exp(-dt * 4.0)
         sh = self.shake
         jitter = (random.uniform(-1, 1) * sh * 1.6, random.uniform(-1, 1) * sh * 1.6, random.uniform(-1, 1) * sh)
-        if a.alive and not self.third_person:
+        spec = a.spec if a.slot in a.inv else None
+        scoped_fp = bool(a.alive and a.ads and spec is not None and spec.scope_overlay)
+        want_ads = bool(a.alive and a.ads and spec is not None and spec.ads_fov)
+        self.tp_ads += ((1.0 if want_ads else 0.0) - self.tp_ads) * min(1.0, dt * 14.0)
+        pose = w.gadgets.view_pose(a) if a.view_mode else None
+        if pose is not None:
+            p, yaw, pitch = pose
+            cam.setPos(float(p[0]), float(p[1]), float(p[2]))
+            cam.setHpr(yaw - 90.0, pitch, 0.0)
+        self.first_person_now = pose is None and a.alive and (not self.third_person or scoped_fp)
+        if pose is not None:
+            pass
+        elif self.first_person_now:
             self.death_cam = None
             pos = a.prev_pos + (a.pos - a.prev_pos) * alpha
             punch = a.prev_punch + (a.punch - a.prev_punch) * alpha
-            cam.setPos(pos[0], pos[1], pos[2] + a.height - C.EYE_FROM_TOP)
-            cam.setHpr(a.yaw + punch[1] - 90.0 + jitter[0], a.pitch + punch[0] + jitter[1], jitter[2])
+            off = a.lean_vec()
+            cam.setPos(pos[0] + off[0], pos[1] + off[1],
+                       pos[2] + a.height - C.EYE_FROM_TOP - abs(a.lean_off) * 0.12)
+            roll = (a.lean_off / LEAN_DIST) * LEAN_ROLL if LEAN_DIST else 0.0
+            cam.setHpr(a.yaw + punch[1] - 90.0 + jitter[0], a.pitch + punch[0] + jitter[1], jitter[2] + roll)
         elif a.alive:
-            pos = a.prev_pos + (a.pos - a.prev_pos) * alpha
-            yr = math.radians(a.yaw)
-            back = Vec3(-math.cos(yr), -math.sin(yr), 0) * 3.2
-            target = Point3(pos[0], pos[1], pos[2] + 1.6)
-            want = target + back + Vec3(math.sin(yr), -math.cos(yr), 0) * 0.6 + Vec3(0, 0, 0.5)
-            d = want - target
-            dist = d.length()
-            d.normalize()
-            t, _, _ = raycast_boxes(np.array([target]), np.array([d]), dist, w.bmin, w.bmax)
-            cam.setPos(target + d * max(0.2, min(dist, float(t[0]) - 0.25)))
-            cam.lookAt(target + Vec3(math.cos(yr), math.sin(yr), math.tan(math.radians(a.pitch))) * 6)
+            self._third_person_camera(a, alpha)
         else:
             if self.death_cam is None:
                 e = a.eye()
@@ -505,19 +585,72 @@ class Viewer:
             cam.setPos(p + to_body * 1.5 * up)
             cam.lookAt(look)
         # FOV
-        spec = a.spec
         target_fov = BASE_HFOV
-        if a.alive and a.ads and spec.ads_fov and not self.third_person:
+        if pose is not None:
+            target_fov = 84.0 if a.view_mode == 1 else 76.0
+        elif want_ads:
             target_fov = spec.ads_fov
+            if self.third_person and not scoped_fp:
+                target_fov = min(BASE_HFOV, spec.ads_fov * 1.12)
         if abs(target_fov - self.fov) > 0.01:
             rate = 20.0 if target_fov < self.fov else 14.0
             self.fov += (target_fov - self.fov) * min(1.0, dt * rate)
-            if spec.scope_overlay and a.ads:
+            if scoped_fp or pose is not None:
                 self.fov = target_fov
             self.base.camLens.setFov(self.fov)
 
+    def _third_person_camera(self, a, alpha):
+        """Over-the-shoulder camera aimed at the point the gun actually hits, so the screen-centre
+        crosshair is truthful. Aiming pulls the camera in to the shoulder."""
+        w = self.world
+        cam = self.base.camera
+        pos = a.prev_pos + (a.pos - a.prev_pos) * alpha
+        punch = a.prev_punch + (a.punch - a.prev_punch) * alpha
+        k = self.tp_ads
+        yr = math.radians(a.yaw)
+        fwd = Vec3(math.cos(yr), math.sin(yr), 0)
+        right = Vec3(math.sin(yr), -math.cos(yr), 0)
+        side = -1.0 if a.lean_off < -0.05 else 1.0
+        eye = a.eye()
+        eye = Point3(float(eye[0]), float(eye[1]), float(eye[2]))
+        # aim point along the real bullet path
+        d = dir_from_angles(a.yaw + punch[1], a.pitch + punch[0])
+        t, _, _ = raycast_boxes(np.array([eye]), d[None], 200.0, w.bmin, w.bmax)
+        aim = eye + Vec3(*d) * float(min(t[0], 200.0))
+        # shoulder anchor
+        anchor = Point3(pos[0], pos[1], pos[2] + a.height - 0.2)
+        back = 3.2 + (1.6 - 3.2) * k
+        lat = (0.6 + (0.78 - 0.6) * k) * side
+        up = 0.5 + (0.3 - 0.5) * k
+        pitch = math.radians(a.pitch)
+        want = anchor - fwd * back * math.cos(pitch) + right * lat + Vec3(0, 0, up - math.sin(pitch) * back * 0.5)
+        dv = want - anchor
+        dist = dv.length()
+        dv.normalize()
+        tt, _, _ = raycast_boxes(np.array([anchor]), np.array([dv]), dist, w.bmin, w.bmax)
+        cam_pos = anchor + dv * max(0.15, min(dist, float(tt[0]) - 0.2))
+        cam.setPos(cam_pos)
+        if (aim - cam_pos).length() < 0.6:
+            aim = cam_pos + Vec3(*d) * 4.0
+        cam.lookAt(aim)
+        roll = (a.lean_off / LEAN_DIST) * LEAN_ROLL * 0.5 if LEAN_DIST else 0.0
+        cam.setR(cam.getR() + roll)
+
     def vfov(self) -> float:
         return float(self.base.camLens.getFov()[1])
+
+    def _sync_dynamic(self):
+        w = self.world
+        self.destruct_view.update()
+        self.gadget_view.update(w.time)
+        cols = point_colors(w)
+        if cols:
+            self.scene.set_point_colors(cols)
+        bomb = getattr(w.mode, "bomb", None)
+        if bomb is not None and bomb.get("state") == "planted" and w.time >= self.bomb_beep_at > 0:
+            left = max(0.0, w.mode.phase_end - w.time)
+            self._sound("beep", Point3(*bomb["pos"]), 0.9, 1.0, 12.0)
+            self.bomb_beep_at = w.time + max(0.12, min(1.0, left / 12.0))
 
     def sync(self, dt: float, alpha: float = 1.0):
         self.t += dt
@@ -526,6 +659,7 @@ class Viewer:
             self.pending_sounds = []
             self._sync_soldiers(dt, alpha)
             self._sync_projectiles(dt)
+            self._sync_dynamic()
             self._cinematic_camera(dt)
             self.scene.update(self.t)
             self.effects.update(dt)
@@ -533,20 +667,22 @@ class Viewer:
         self._process_events()
         self._sync_soldiers(dt, alpha)
         self._sync_projectiles(dt)
+        self._sync_dynamic()
         self._camera(dt, alpha)
         self.scene.update(self.t)
         self.effects.update(dt)
         a = self.world.agents[self.pov]
-        scope = bool(a.alive and a.ads and a.spec.scope_overlay and not self.third_person
-                     and (self.vm is None or self.vm.ads_blend > 0.85))
+        fp = self.first_person_now
+        scope = bool(fp and a.ads and a.slot in a.inv and a.spec.scope_overlay
+                     and (self.vm is None or self.vm.ads_blend > 0.85 or self.third_person))
         if self.vm is not None:
-            self.vm.set_visible(a.alive and not self.third_person)
+            self.vm.set_visible(fp)
             self.vm.update(dt, self.world, a, self.mouse_dx, self.mouse_dy,
                            self.scene.sun_np.getQuat(self.base.camera))
             if self.hud is not None and self.hud.inspect_t > 0 and not self.vm.inspecting:
                 self.hud.hide_inspect()
         if self.hud is not None:
-            self.hud.update(dt, self.world, a, self.vfov(), self.show_board, scope)
+            self.hud.update(dt, self.world, a, self.vfov(), self.show_board, scope, first_person=fp)
 
     def draw(self, dt: float, alpha: float = 1.0):
         """Sync and render one frame (for externally driven loops such as the RL env)."""

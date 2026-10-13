@@ -28,7 +28,9 @@ DIM = (0.7, 0.72, 0.76, 1)
 
 DIFFICULTIES = [("easy", "简单", "Easy"), ("normal", "普通", "Normal"), ("hard", "困难", "Hard"),
                 ("insane", "地狱", "Insane")]
-SPAN = {"ak47": 1.1, "awm": 1.5, "deagle": 0.3, "knife": 0.36, "frag": 0.14, "smoke": 0.14}
+SPAN = {"ak47": 1.1, "awm": 1.5, "deagle": 0.3, "knife": 0.36, "frag": 0.14, "smoke": 0.14, "m4a4": 1.05,
+        "m4a1": 1.1, "famas": 0.95, "mp5": 0.75, "mp9": 0.6, "uzi": 0.58, "dualies": 0.24, "scar20": 1.25,
+        "m249": 1.15}
 
 
 def _gradient_tex():
@@ -451,8 +453,8 @@ class MainMenu:
         self.arm_weapon = getattr(self, "arm_weapon", "ak47")
         self.arm_tabs = {}
         for i, w in enumerate(SKIN_WEAPONS):
-            self.arm_tabs[w] = ui.button(page, WEAPONS[w].display, (-0.88 + i * 0.37, 0.33), self._arm_select,
-                                         (0.17, 0.04), 0.036, [w])
+            self.arm_tabs[w] = ui.button(page, WEAPONS[w].display, (-0.9 + (i % 7) * 0.3, 0.36 - (i // 7) * 0.09),
+                                         self._arm_select, (0.14, 0.036), 0.03, [w])
         self.arm_list = DirectFrame(parent=page, frameColor=(0, 0, 0, 0))
         self.arm_caption = ui.label(page, "", (0.45, -0.66), 0.045, WHITE, TextNode.ACenter)
         self.arm_rarity = ui.label(page, "", (0.45, -0.72), 0.034, DIM, TextNode.ACenter)
@@ -471,7 +473,7 @@ class MainMenu:
         for i, sk in enumerate(SKINS[weapon]):
             col = RARITY[sk.rarity][2]
             mark = self.ui.L("  · 已装备", "  · equipped") if sk.key == equipped else ""
-            b = ui.button(self.arm_list, f"{L(sk.zh, sk.en)}{mark}", (-0.75, 0.2 - i * 0.105), self._arm_equip,
+            b = ui.button(self.arm_list, f"{L(sk.zh, sk.en)}{mark}", (-0.75, 0.12 - i * 0.105), self._arm_equip,
                           (0.3, 0.043), 0.04, [weapon, sk.key], align=TextNode.ALeft,
                           color=(0.2, 0.21, 0.25, 0.95) if sk.key == equipped else BTN)
             DirectFrame(parent=b, frameColor=col, frameSize=(-0.3, -0.288, -0.043, 0.043))

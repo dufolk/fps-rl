@@ -33,3 +33,15 @@ class MapData:
     strategic_points: list
     water_z: float = -5.0
     sun_dir: tuple = (-0.55, 0.45, -0.55)
+    theme: str = "ship"  # renderer branch: ship | desert | town | bank
+    modes: tuple = ("tdm",)
+    # objectives:
+    #   points: [{"name", "poly": [[x, y]...], "zmin", "zmax"}]            (domination)
+    #   sites:  [{"name", "poly", "zmin", "zmax"}]                        (bomb / R6 sites)
+    #   site_sets: [[site index, ...], ...]                               (R6: sites defended together)
+    #   defender_spawns: {set index: [(x, y, z, yaw), ...]}               (R6)
+    objectives: dict = field(default_factory=dict)
+    buy_zones: dict = field(default_factory=dict)  # side -> list of polygons
+    cameras: list = field(default_factory=list)  # [(x, y, z, yaw, pitch)] security cameras (R6)
+    nav_max_floor: float = 1.3  # floors above this are not walkable for the nav grid (ship bridge roof)
+    nav_levels: tuple = ()  # extra z heights for multi-storey maps (handled by the nav grid)
