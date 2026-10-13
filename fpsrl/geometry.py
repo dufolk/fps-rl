@@ -37,6 +37,38 @@ def raycast_boxes(origins, dirs, max_t, bmin, bmax):
     return t, idx, normal
 
 
+def segments_blocked(p0, p1, bmin, bmax, eps: float = 1e-3):
+    """bool[R]: whether segment p0->p1 hits any box before (eps short of) its end point.
+
+    Boxes are culled against each segment's bounding box first, so large maps stay cheap.
+    """
+    p0 = np.asarray(p0, dtype=np.float64).reshape(-1, 3)
+    p1 = np.asarray(p1, dtype=np.float64).reshape(-1, 3)
+    r = p0.shape[0]
+    out = np.zeros(r, dtype=bool)
+    if bmin.shape[0] == 0 or r == 0:
+        return out
+    lo = np.minimum(p0, p1)
+    hi = np.maximum(p0, p1)
+    cand = ((lo[:, None, 0] <= bmax[None, :, 0]) & (hi[:, None, 0] >= bmin[None, :, 0])
+            & (lo[:, None, 1] <= bmax[None, :, 1]) & (hi[:, None, 1] >= bmin[None, :, 1])
+            & (lo[:, None, 2] <= bmax[None, :, 2]) & (hi[:, None, 2] >= bmin[None, :, 2]))
+    ri, bi = np.nonzero(cand)
+    if not len(ri):
+        return out
+    d = (p1 - p0)[ri]
+    o = p0[ri]
+    inv = 1.0 / np.where(np.abs(d) < 1e-12, 1e-12, d)
+    t1 = (bmin[bi] - o) * inv
+    t2 = (bmax[bi] - o) * inv
+    tnear = np.minimum(t1, t2).max(axis=1)
+    tfar = np.maximum(t1, t2).min(axis=1)
+    length = np.linalg.norm(p1 - p0, axis=1)[ri]
+    hit = (tnear <= tfar) & (tfar >= 0.0) & (tnear < 1.0 - eps / np.maximum(length, 1e-9))
+    out[ri[hit]] = True
+    return out
+
+
 def aabb_overlap_mask(mn, mx, bmin, bmax):
     """Boolean mask of boxes strictly overlapping the box [mn, mx]."""
     return ((mn[0] < bmax[:, 0]) & (mx[0] > bmin[:, 0])

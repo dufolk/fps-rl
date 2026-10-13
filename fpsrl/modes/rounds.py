@@ -2,6 +2,7 @@
 reused by the Siege (R6) mode."""
 from __future__ import annotations
 
+import itertools
 import math
 
 import numpy as np
@@ -11,6 +12,7 @@ from ..weapons import SLOT_BOMB, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS
 from .base import GameMode
 
 ATT, DEF = 0, 1  # sides
+_ROUND_UID = itertools.count(1)
 
 
 class RoundMode(GameMode):
@@ -49,6 +51,7 @@ class RoundMode(GameMode):
         survivors = {a.id for a in w.agents if a.alive} if not fresh else set()
         w.clear_round()
         self.round_no += 1
+        self.round_uid = next(_ROUND_UID)  # unique across matches, for per-round caches
         self.bomb = None
         self.before_spawn(fresh)
         for team in (0, 1):

@@ -7,10 +7,15 @@ import math
 import numpy as np
 
 from . import config as C
+from .geometry import point_in_poly, poly_center
+from .modes.rounds import ATT, DEF, RoundMode
 from .sim import IDLE, Action, Agent, World, angles_to, wrap180
-from .weapons import SLOT_FRAG, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY
+from .weapons import SLOT_BOMB, SLOT_FRAG, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY, SLOT_SMOKE
 
 DIFFICULTY_LEVELS = {"easy": 0.2, "normal": 0.5, "hard": 0.85, "insane": 1.0}
+# tasks the bot keeps doing even when it hears / remembers enemies
+FORCED_TASKS = ("plant", "defuse", "fetch", "reinforce")
+BUSY_TASKS = ("plant", "defuse", "reinforce", "barricade")
 
 
 class NavGrid:
@@ -243,11 +248,15 @@ class NavGrid:
 class Bot:
     """Rule-based player controller. Call `act()` once per simulation tick."""
 
+    # per-round team decisions keyed by RoundMode.round_uid: attack site, claimed reinforcement walls
+    _plans: dict = {}
+
     def __init__(self, world: World, agent_id: int, difficulty: float | str = "normal", seed: int | None = None):
         self.world = world
         self.aid = agent_id
         self.nav = NavGrid.for_world(world)
         self.rng = np.random.default_rng(seed)
+        self.bought = None
         self.set_difficulty(difficulty)
         self.reset()
 
@@ -287,6 +296,10 @@ class Bot:
         self.grenade_state = None
         self.grenade_until = 0.0
         self.was_alive = False
+        self.task = None
+        self.task_data = None
+        self.stuck_n = 0
+        self.bash_until = 0.0
 
     @property
     def agent(self) -> Agent:
@@ -320,18 +333,255 @@ class Bot:
     def _pick_goal(self):
         w = self.world
         a = self.agent
+        goal, task, bias = self._objective()
+        self.task = task if goal is not None else None
+        if goal is not None and task in FORCED_TASKS:
+            return goal
         if self.investigate is not None:
             g, self.investigate = self.investigate, None
+            self.task = None
             return g
         recent = [(t, p) for eid, (t, p) in self.last_seen.items() if w.time - t < 8.0]
-        if recent and self.rng.random() < 0.7:
+        if recent and self.rng.random() < 0.7 * (1.0 - bias):
+            self.task = None
             return max(recent, key=lambda x: x[0])[1]
+        if goal is not None and self.rng.random() < bias:
+            return goal
+        self.task = None
         pts = w.map.strategic_points
-        enemy_side = 1.0 if a.team == 0 else -1.0
-        weights = np.array([1.0 + 0.6 * max(0.0, enemy_side * x / 20.0) for x, _ in pts])
+        enemy = np.mean([s[:2] for s in w.map.spawns[1 - w.mode.side(a.team)]], axis=0)
+        own = np.mean([s[:2] for s in w.map.spawns[w.mode.side(a.team)]], axis=0)
+        span = max(float(np.linalg.norm(enemy - own)), 1.0)
+        weights = np.array([1.0 + 0.6 * max(0.0, 1.0 - float(np.linalg.norm(np.asarray(p[:2]) - enemy)) / span)
+                            for p in pts])
         k = self.rng.choice(len(pts), p=weights / weights.sum())
-        x, y = pts[k]
-        return np.array([x + self.rng.uniform(-1.5, 1.5), y + self.rng.uniform(-1.0, 1.0), 0.0])
+        x, y = pts[k][:2]
+        x, y = x + self.rng.uniform(-1.5, 1.5), y + self.rng.uniform(-1.0, 1.0)
+        n = self.nav.nearest_cell((x, y, a.pos[2]))
+        return np.array([x, y, self.nav.nodes[n, 2] if n >= 0 else a.pos[2]])
+
+    # ------------------------------------------------------------------ objectives
+    def _zone_point(self, zone, spread: float = 0.35) -> np.ndarray:
+        poly = np.asarray(zone["poly"], dtype=np.float64)
+        lo, hi = poly.min(0), poly.max(0)
+        for _ in range(6):
+            x, y = (lo + hi) * 0.5 + (hi - lo) * spread * self.rng.uniform(-1.0, 1.0, 2)
+            if point_in_poly(x, y, poly):
+                break
+        else:
+            x, y = poly_center(poly)
+        return np.array([x, y, zone.get("z", zone.get("zmin", -0.5) + 0.5)])
+
+    def _objective(self):
+        """(goal, task, bias): where the game mode wants this bot, what to do there and how strongly
+        it prefers that over hunting."""
+        m = self.world.mode
+        a = self.agent
+        if m.name == "dom":
+            return self._dom_objective(m, a)
+        if isinstance(m, RoundMode):
+            return self._round_objective(m, a)
+        return None, None, 0.0
+
+    def _dom_objective(self, m, a):
+        if not m.points:
+            return None, None, 0.0
+        cur = self.task_data if self.task == "capture" else None
+        if cur is not None and (m.owner[cur] != a.team or m.present[cur][1 - a.team]) \
+                and self.rng.random() < 0.8:
+            k = cur
+        else:
+            scores = []
+            for i, c in enumerate(m.centers):
+                d = math.hypot(c[0] - a.pos[0], c[1] - a.pos[1])
+                s = 30.0 / (8.0 + d)
+                if m.owner[i] != a.team:
+                    s *= 3.0
+                if m.present[i][1 - a.team]:
+                    s *= 1.5
+                scores.append(s)
+            p = np.array(scores) ** 2
+            k = int(self.rng.choice(len(p), p=p / p.sum()))
+        self.task_data = k
+        hunter = self.aid % 4 == 3
+        bias = 0.45 if hunter else (0.85 if m.owner[k] != a.team else 0.5)
+        return self._zone_point(m.points[k]), "capture", bias
+
+    def _team_site(self, m, team) -> int:
+        key = (m.round_uid, team, "site")
+        if key not in Bot._plans:
+            if len(Bot._plans) > 256:
+                Bot._plans.clear()
+            Bot._plans[key] = int(self.rng.choice(m.active_sites)) if m.active_sites else -1
+        return Bot._plans[key]
+
+    def _round_objective(self, m, a):
+        side = m.side(a.team)
+        b = m.bomb
+        if m.phase == "over" or not m.sites:
+            return None, None, 0.0
+        if side == ATT:
+            if m.phase in ("freeze", "prep"):
+                return None, None, 0.0
+            if b is not None and b["state"] == "carried" and b["carrier"] == a.id:
+                site = self._team_site(m, a.team)
+                return self._zone_point(m.sites[site], 0.25), "plant", 1.0
+            if b is not None and b["state"] == "dropped":
+                bp = np.asarray(b["pos"])
+                closest = min(m.members(a.team, alive_only=True), key=lambda o: float(np.linalg.norm(o.pos - bp)))
+                if closest.id == a.id:
+                    return bp.copy(), "fetch", 1.0
+            if m.phase == "planted" and b is not None:
+                bp = np.asarray(b["pos"])
+                ang = self.rng.uniform(0, 2 * math.pi)
+                r = self.rng.uniform(3.0, 7.0)
+                g = bp + np.array([math.cos(ang) * r, math.sin(ang) * r, 0.0])
+                return g, "guard", 0.9
+            site = self._team_site(m, a.team)
+            if site < 0:
+                return None, None, 0.0
+            return self._zone_point(m.sites[site], 0.45), "push", 0.8
+        # defenders
+        if m.phase == "planted" and b is not None:
+            return np.asarray(b["pos"], dtype=np.float64).copy(), "defuse", 1.0
+        if m.phase == "prep" and getattr(m, "reinforce_left", 0) > 0:
+            t = self.task_data if self.task == "reinforce" else None
+            if t is None or not self.world.destruct.panel_soft(t[0]):
+                t = self._reinforce_target(m, a)
+            if t is not None:
+                self.task_data = t
+                return t[1], "reinforce", 1.0
+        if not m.active_sites:
+            return None, None, 0.0
+        mates = sorted(o.id for o in m.members(a.team))
+        site = m.active_sites[mates.index(a.id) % len(m.active_sites)]
+        bias = 0.9 if m.name == "r6" else 0.65
+        return self._zone_point(m.sites[site], 0.4), "hold", bias
+
+    def _reinforce_target(self, m, a):
+        """(panel id, stand point, look point) of an unreinforced wall next to an active site."""
+        w = self.world
+        claimed = Bot._plans.setdefault((m.round_uid, "reinf"), set())
+        best, best_d = None, 1e9
+        for si in m.active_sites:
+            zone = m.sites[si]
+            c = m.site_centers[si]
+            zf = zone.get("z", zone.get("zmin", -0.5) + 0.5)
+            for p in w.destruct.panels:
+                if p.axis == 2 or not p.alive or p.reinforced or p.wall in claimed:
+                    continue
+                if not (zf + 0.8 < p.center[2] < zf + 2.2):
+                    continue
+                d = math.hypot(p.center[0] - c[0], p.center[1] - c[1])
+                if d > 10.0:
+                    continue
+                n = np.zeros(3)
+                n[p.axis] = 1.0 if c[p.axis] > p.center[p.axis] else -1.0
+                stand = p.center + n * 0.85
+                stand[2] = zf
+                node = self.nav.nearest_cell(stand)
+                if node < 0 or np.linalg.norm(self.nav.nodes[node] - stand) > 0.45:
+                    continue
+                dd = d + 0.3 * math.hypot(stand[0] - a.pos[0], stand[1] - a.pos[1])
+                if dd < best_d:
+                    best, best_d = (p, stand), dd
+        if best is None:
+            return None
+        p, stand = best
+        claimed.add(p.wall)
+        look = p.center.copy()
+        look[2] = stand[2] + C.STAND_HEIGHT - C.EYE_FROM_TOP
+        return p.id, stand, look
+
+    def _task_act(self, a: Agent, act: Action, dt: float) -> bool:
+        """Carry out the current task once in place. Returns True when it took over the controls."""
+        w = self.world
+        m = w.mode
+        task = self.task
+        if task == "plant":
+            if SLOT_BOMB not in a.inv or m.site_at(a.pos) < 0 or not a.on_ground:
+                return False
+            act.move_forward = act.move_right = 0.0
+            if a.slot != SLOT_BOMB:
+                act.switch = SLOT_BOMB
+            else:
+                act.fire = True
+            return True
+        if task == "defuse":
+            b = m.bomb
+            if b is None or b["state"] != "planted":
+                return False
+            bp = np.asarray(b["pos"])
+            if math.hypot(*(bp[:2] - a.pos[:2])) > 1.1 or abs(bp[2] - a.pos[2]) > 1.3:
+                return False
+            act.move_forward = act.move_right = 0.0
+            act.crouch = True
+            act.use = not a.prev_use
+            return True
+        if task == "reinforce":
+            pid, stand, look = self.task_data
+            p = w.destruct.panels[pid]
+            if p.reinforced or not p.alive or getattr(m, "reinforce_left", 0) <= 0:
+                self.task = None
+                self.replan_at = w.time
+                return False
+            off = stand - a.pos
+            dist = math.hypot(off[0], off[1])
+            if dist > 1.5:
+                return False
+            yaw, pitch = angles_to(a.eye(), look)
+            dyaw, dpitch, ey, ep = self._turn_towards(a, yaw, pitch, dt, 12.0)
+            act.look_yaw, act.look_pitch = dyaw, dpitch
+            if dist > 0.3:
+                yaw_saved = a.yaw
+                a.yaw = (a.yaw + dyaw) % 360.0
+                fwd, right = self._move_axes(a, off)
+                a.yaw = yaw_saved
+                act.move_forward, act.move_right = fwd * 0.5, right * 0.5
+                act.walk = True
+                return True
+            act.move_forward = act.move_right = 0.0
+            act.use = abs(ey) < 4.0 and abs(ep) < 4.0 and not a.prev_use
+            return True
+        return False
+
+    def _continue_busy(self, a: Agent) -> Action:
+        kind = a.busy[0]
+        return Action(use=True, fire=kind in ("plant", "place"), crouch=kind == "defuse")
+
+    # ------------------------------------------------------------------ economy
+    def _maybe_buy(self, a: Agent):
+        w = self.world
+        m = w.mode
+        if self.bought == m.round_uid or not m.can_buy_now(a):
+            return
+        self.bought = m.round_uid
+        side = m.side(a.team)
+        money = a.money
+        pistol_round = m.round_no == 1 or (m.swapped and m.round_no == m.p["half_rounds"] + 1)
+        prim = a.inv.get(SLOT_PRIMARY)
+        if prim is None:
+            want = None
+            if money >= 5700 and self.skill > 0.55 and self.rng.random() < 0.18:
+                want = "awm"
+            elif money >= 3700:
+                want = "ak47" if side == ATT else str(self.rng.choice(["m4a4", "m4a1"]))
+            elif money >= 2650:
+                want = "famas" if side == DEF or self.rng.random() < 0.5 else "ak47"
+            elif money >= 1900 and (self.rng.random() < 0.6 or money >= 2400):
+                want = str(self.rng.choice(["mp9", "uzi", "mp5"]))
+            if want is not None:
+                w.buy(a, want)
+        if a.inv.get(SLOT_PRIMARY) is None and pistol_round and a.money >= 700 and self.rng.random() < 0.4:
+            w.buy(a, "deagle")
+        if a.money >= 300 and SLOT_FRAG not in a.inv and (not pistol_round or self.rng.random() < 0.5):
+            w.buy(a, "frag")
+        if a.money >= 700 and SLOT_SMOKE not in a.inv and self.rng.random() < 0.5:
+            w.buy(a, "smoke")
+        if side == DEF and a.money >= 400 and SLOT_BOMB not in a.inv and self.rng.random() < 0.6:
+            w.buy(a, "defuser")
+        if a.slot != w.best_slot(a):
+            w.switch_weapon(a, w.best_slot(a))
 
     # ------------------------------------------------------------------ main
     def act(self) -> Action:
@@ -344,6 +594,14 @@ class Bot:
         if not self.was_alive:
             self.was_alive = True
             self._plan(self._pick_goal())
+        if w.mode.name == "bomb":
+            self._maybe_buy(a)
+        if a.busy is not None and a.busy[0] in BUSY_TASKS:
+            return self._continue_busy(a)
+        if a.frozen:
+            if w.time >= self.replan_at:
+                self._plan(self._pick_goal())
+            return IDLE
         now, dt = w.time, w.dt
         vis = w.visibility()
 
@@ -489,6 +747,9 @@ class Bot:
         if recent:
             p = max(recent, key=lambda x: x[0])[1]
             look_yaw, look_pitch = angles_to(a.eye(), p + np.array([0, 0, 1.4]))
+        bashing = now < self.bash_until
+        if bashing:
+            look_pitch = 0.0
         dyaw, dpitch, _, _ = self._turn_towards(a, look_yaw, look_pitch, dt, 6.0)
         act.look_yaw, act.look_pitch = dyaw, dpitch
         # re-derive move axes after the turn is applied this tick
@@ -498,7 +759,15 @@ class Bot:
             a.yaw = (a.yaw + dyaw) % 360.0
             act.move_forward, act.move_right = self._move_axes(a, d)
             a.yaw = yaw_saved
+        if self._task_act(a, act, dt):
+            return
         ws = a.weapon
+        if bashing:
+            # knife through barricades / soft walls the nav grid treats as open
+            if a.slot != SLOT_MELEE:
+                act.switch = SLOT_MELEE
+            act.fire = True
+            return
         if ws.spec.kind == "gun" and ws.mag < ws.spec.mag * 0.4 and ws.reserve > 0:
             act.reload = not a.reloading and not a.prev_reload
         if a.slot != w.best_slot(a) and ws.spec.kind != "grenade":
@@ -507,9 +776,16 @@ class Bot:
         if now >= self.stuck_check:
             if self.stuck_pos is not None and float(np.linalg.norm(a.pos - self.stuck_pos)) < 0.4 \
                     and (abs(act.move_forward) + abs(act.move_right)) > 0.1:
+                self.stuck_n += 1
                 self.jump_until = now + 0.2
                 self.replan_at = now + 0.3
-                self.path_i = min(self.path_i + 1, max(0, len(self.path) - 1))
+                if self.stuck_n >= 2:
+                    self.bash_until = now + 1.5
+                    self.replan_at = now + 1.6
+                else:
+                    self.path_i = min(self.path_i + 1, max(0, len(self.path) - 1))
+            else:
+                self.stuck_n = 0
             self.stuck_pos = a.pos.copy()
             self.stuck_check = now + 1.0
         act.jump = now < self.jump_until
@@ -517,7 +793,9 @@ class Bot:
     # ------------------------------------------------------------------ grenades
     def _maybe_grenade(self, a: Agent):
         w = self.world
-        if a.inv[SLOT_FRAG].mag <= 0 or self.rng.random() > 0.01 + 0.02 * self.skill:
+        frag = a.inv.get(SLOT_FRAG)
+        if frag is None or frag.spec.kind != "grenade" or frag.mag <= 0 \
+                or self.rng.random() > 0.01 + 0.02 * self.skill:
             return
         recent = [(t, p) for t, p in self.last_seen.values() if 0.8 < w.time - t < 4.0]
         if not recent:
@@ -530,7 +808,8 @@ class Bot:
 
     def _grenade(self, a: Agent, act: Action, dt: float):
         w = self.world
-        if w.time > self.grenade_until or a.inv[SLOT_FRAG].mag <= 0:
+        frag = a.inv.get(SLOT_FRAG)
+        if w.time > self.grenade_until or frag is None or frag.mag <= 0:
             self.grenade_state = None
             return
         if a.slot != SLOT_FRAG:

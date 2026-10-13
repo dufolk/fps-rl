@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import config as C
-from .geometry import aabb_overlap_mask, raycast_boxes, segments_hit_spheres
+from .geometry import aabb_overlap_mask, raycast_boxes, segments_blocked, segments_hit_spheres
 from .maps import load_map
 from .weapons import (MELEE, SECONDARY, SLOT_FRAG, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY,
                       SLOT_SMOKE, WEAPONS)
@@ -1295,10 +1295,7 @@ class World:
         if pairs:
             p0 = np.array(p0)
             p1 = np.array(p1)
-            d = p1 - p0
-            dist = np.linalg.norm(d, axis=1)
-            t, _, _ = raycast_boxes(p0, d / np.maximum(dist, 1e-9)[:, None], dist, self.bmin, self.bmax)
-            clear = t >= dist - 1e-3
+            clear = ~segments_blocked(p0, p1, self.bmin, self.bmax)
             if self.smokes:
                 clear &= ~self._smoke_blocks(p0, p1)
             for (i, j), c in zip(pairs, clear):
