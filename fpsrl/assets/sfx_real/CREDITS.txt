@@ -1,0 +1,41 @@
+Real reload / footstep recordings
+=================================
+
+These mono clips override the procedural fallbacks in `fpsrl/render/audio.py`.
+Each source is CC0 1.0 (public domain dedication); no attribution is required.
+This file is retained for provenance.
+
+Handgun reload (mag_out / mag_in / bolt)
+----------------------------------------
+Source: "Handgun Reload Sound Effect" by zer0_sol
+https://opengameart.org/content/handgun-reload-sound-effect
+License: CC0 1.0
+Trimmed from reload.wav into magazine release, magazine seat, and slide rack.
+
+Shotgun pump (pump)
+-------------------
+Source: "Gun reload sounds" by SpringySpringo
+https://opengameart.org/content/gun-reload-sounds
+License: CC0 1.0
+Trimmed from shotguncock.wav.
+
+Dry fire click (dry)
+--------------------
+Source: "equipment clicks III" by LFA
+https://opengameart.org/content/equipment-clicks-iii
+License: CC0 1.0
+Excerpt from equipment_clicks3.wav (bolt-action rifle cocking / clicks).
+
+Footsteps (step0–step2)
+-----------------------
+Source: "Footsteps" by GboxMikeFozzy
+https://opengameart.org/content/footsteps-0
+License: CC0 1.0
+Hard-surface subway recordings (01–03), trimmed and normalised.
+
+Footstep (step3)
+----------------
+Source: "Different steps on wood, stone, leaves, gravel and mud" by kirkdevaughn / kdd
+https://opengameart.org/content/different-steps-on-wood-stone-leaves-gravel-and-mud
+License: CC0 1.0
+stone01.ogg, trimmed and normalised.

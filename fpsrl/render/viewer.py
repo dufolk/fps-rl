@@ -704,18 +704,19 @@ class Viewer:
             elif t == "reload":
                 a = w.agents[e["agent"]]
                 pos = Point3(*a.eye())
-                vol = 0.8 if e["agent"] == me else 0.6
+                vol = 0.95 if e["agent"] == me else 0.7
                 # timed to the viewmodel's reload keyframes (mag yank, slam, bolt rack)
                 self.pending_sounds.append((w.time + e["duration"] * 0.2, "mag_out", e["agent"], vol))
                 self.pending_sounds.append((w.time + e["duration"] * 0.55, "mag_in", e["agent"], vol))
-                self.pending_sounds.append((w.time + e["duration"] * 0.76, "bolt", e["agent"], vol * 0.7))
+                self.pending_sounds.append((w.time + e["duration"] * 0.76, "bolt", e["agent"], vol * 0.85))
             elif t == "switch":
                 if e["agent"] == me:
                     self._sound("draw", None, 0.5)
             elif t == "footstep":
                 a = w.agents[e["agent"]]
-                vol = 0.25 if e["agent"] == me else 0.75
-                self._sound(f"step{random.randint(0, 3)}", Point3(*e["pos"]), vol, random.uniform(0.9, 1.1), 5.0)
+                # Real hard-surface samples are quieter / shorter than the old synth clank.
+                vol = 0.38 if e["agent"] == me else 0.85
+                self._sound(f"step{random.randint(0, 3)}", Point3(*e["pos"]), vol, random.uniform(0.92, 1.08), 5.0)
             elif t == "land":
                 a = w.agents[e["agent"]]
                 self._sound("land", Point3(*a.pos), 0.5 if e["agent"] == me else 0.6, 1.0, 5.0)
