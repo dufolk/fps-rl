@@ -83,7 +83,7 @@ bot 在彩六里会：防守方准备阶段加固点位附近的墙、给门窗�
 ### 击杀反馈与检视
 
 - 击杀时屏幕底部弹出击杀勋章（普通 / 爆头 / 刀杀 / 手雷），连杀显示 双杀 / 三杀 / 四杀 / 五杀 / 超神 和连杀点数，配合随连杀升调的击杀音效与爆头 / 刀杀 / 手雷专属音。
-- 想换音效：把同名文件（如 `kill_1.wav` … `kill_6.wav`、`mag_out.wav` / `mag_in.wav` / `bolt.wav`、`step0.wav` … `step3.wav`，支持 wav/ogg/mp3）放进 `fpsrl/custom_sfx/` 即可覆盖。内置真实采样见 `fpsrl/assets/gunshots/` 与 `fpsrl/assets/sfx_real/`（CREDITS.txt）。
+- 想换音效：把同名 wav/ogg/mp3（如 `kill_1`…`kill_6`、`explosion`、`mag_out`）放进 `fpsrl/custom_sfx/` 即可覆盖。内置 CC0 真实采样：`fpsrl/assets/gunshots/`（枪声）与 `fpsrl/assets/sfx_real/`（换弹、脚步、爆炸、命中、近战、UI、目标等，见 CREDITS.txt）。连杀勋章音仍为合成。
 - **F 键检视**：没有可交互对象时，F 播放检视动作，右下角显示「武器 | 皮肤名」和稀有度颜色；开火、换弹、开镜、切枪会打断检视。
 
 | 按键 | 功能 |

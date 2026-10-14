@@ -9,7 +9,7 @@ import numpy as np
 from panda3d.core import Filename
 
 SR = 44100
-SYNTH_VERSION = "9"
+SYNTH_VERSION = "10"
 CUSTOM_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "custom_sfx")
 REAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "gunshots")
 REAL_SFX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "sfx_real")
@@ -19,12 +19,6 @@ REAL_GUNSHOTS = {
     "mp5": "pistol_real.wav", "mp9": "pistol_real.wav", "uzi": "pistol_real.wav",
     "awm": "sniper_real.wav", "scar20": "sniper_real.wav", "m249": "rifle_real.wav",
     "nova": "shotgun_real.wav",
-}
-# Trimmed CC0 field / game recordings (see assets/sfx_real/CREDITS.txt).
-REAL_SFX = {
-    "mag_out": "mag_out.wav", "mag_in": "mag_in.wav", "bolt": "bolt.wav", "pump": "pump.wav",
-    "dry": "dry.wav",
-    "step0": "step0.wav", "step1": "step1.wav", "step2": "step2.wav", "step3": "step3.wav",
 }
 
 
@@ -327,10 +321,11 @@ def ensure_sounds(cache_dir: str) -> dict[str, str]:
         p = os.path.join(REAL_DIR, fn)
         if os.path.isfile(p):
             paths[name] = p
-    for name, fn in REAL_SFX.items():
-        p = os.path.join(REAL_SFX_DIR, fn)
-        if os.path.isfile(p):
-            paths[name] = p
+    if os.path.isdir(REAL_SFX_DIR):  # any *.wav here wins over synth (see CREDITS.txt)
+        for fn in os.listdir(REAL_SFX_DIR):
+            name, ext = os.path.splitext(fn)
+            if ext.lower() == ".wav":
+                paths[name] = os.path.join(REAL_SFX_DIR, fn)
     if os.path.isdir(CUSTOM_DIR):  # user-provided overrides, e.g. custom_sfx/kill_2.wav
         for fn in os.listdir(CUSTOM_DIR):
             name, ext = os.path.splitext(fn)
