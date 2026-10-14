@@ -1,0 +1,59 @@
+CC0 sound overrides for FPS-RL
+==============================
+
+Mono clips in this folder override the procedural fallbacks in
+`fpsrl/render/audio.py` (same mechanism as `assets/gunshots/`). Every source
+below is CC0 1.0; no attribution is required. This file is for provenance.
+
+Reload / dry / pump
+-------------------
+- mag_out, mag_in, bolt — "Handgun Reload Sound Effect" by zer0_sol
+  https://opengameart.org/content/handgun-reload-sound-effect
+- pump — "Gun reload sounds" by SpringySpringo
+  https://opengameart.org/content/gun-reload-sounds
+- dry — "equipment clicks III" by LFA
+  https://opengameart.org/content/equipment-clicks-iii
+
+Footsteps
+---------
+- step0–step2 — "Footsteps" by GboxMikeFozzy
+  https://opengameart.org/content/footsteps-0
+- step3 — "Different steps on wood, stone, leaves, gravel and mud" by kdd
+  https://opengameart.org/content/different-steps-on-wood-stone-leaves-gravel-and-mud
+
+Combat / impacts / melee
+------------------------
+- impact_metal, impact_wood, hit, hurt, knife_hit, knife_wall, reinforce —
+  "Hit sounds" by pauliuw  https://opengameart.org/content/hit-sounds
+- flesh, headshot, pin, view_static, wall_break (parts), round_win —
+  "100 CC0 SFX" by rubberduck  https://opengameart.org/content/100-cc0-sfx
+- knife_swing — "Battle Sound Effects" by artisticdude (CC0 option)
+  https://opengameart.org/content/battle-sound-effects
+- draw — "RPG Sound Pack" by artisticdude
+  https://opengameart.org/content/rpg-sound-pack
+
+Explosions / crash
+------------------
+- explosion, bomb_explode, flash_bang, drone, beep, defuse_tick, spot,
+  round_start (parts), smoke_hiss (parts) —
+  "50 CC0 Sci-Fi SFX" by rubberduck  https://opengameart.org/content/50-cc0-sci-fi-sfx
+- flash_bang / bomb_explode also use "Explosion" by TinyWorlds
+  https://opengameart.org/content/explosion-0
+  and "Crash Collision" by qubodup
+  https://opengameart.org/content/crash-collision
+
+Movement
+--------
+- jump, land — "Jump Landing Sound" by qubodup
+  https://opengameart.org/content/jump-landing-sound
+
+UI / objectives
+---------------
+- ui_click, ui_hover, capture, lost — "UI Sounds"
+  https://opengameart.org/content/ui-sounds
+- buy, plant_done, round_lose, bounce, round_start (parts) —
+  "Interface Sounds" by Kenney
+  https://opengameart.org/content/interface-sounds
+
+Kill-streak stings (kill_1…kill_6) remain synthesised musical cues.
+Put any same-named file in `fpsrl/custom_sfx/` to override further.

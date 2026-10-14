@@ -4,6 +4,8 @@ __pycache__/
 fpsrl/assets/*
 !fpsrl/assets/gunshots/
 !fpsrl/assets/gunshots/**
+!fpsrl/assets/sfx_real/
+!fpsrl/assets/sfx_real/**
 shots/
 runs/
 domin/
