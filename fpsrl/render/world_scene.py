@@ -75,21 +75,33 @@ class WorldScene:
         self._build_lights(shadows, shadow_size)
         self._build_sky()
         ship = game_map.theme == "ship"
+        # An imported map sealed by its BSP sky shell shows sky past its edges and through floor gaps,
+        # so the procedural ground and backdrop are left out.
+        if game_map.mesh:
+            from .map_mesh import has_sky_shell
+            sealed = has_sky_shell(game_map.mesh)
+        else:
+            sealed = False
         if ship:
             self._build_water()
         else:
             self.water = None
-            self._build_ground()
+            if not sealed:
+                self._build_ground()
         self._build_map()
         if game_map.mesh:
             from .map_mesh import build as build_mesh
             build_mesh(self.root, game_map.mesh, self.ts_normal)
         self._build_props()
-        if ship:
+        if ship and any(b.tag == "container" and b.visible for b in game_map.boxes):
             self._build_container_details()
+        # The railings, deck paint and harbour backdrop belong to the procedural ship; an imported
+        # map brings its own (the BSP skybox is part of its mesh).
+        if ship and not game_map.mesh:
+            self._build_railings()
             self._build_markings()
             self._build_distant()
-        else:
+        elif not ship and not sealed:
             self._build_distant_land()
         self._build_objectives()
         fog = Fog("fog")
@@ -201,6 +213,9 @@ class WorldScene:
         water.setMaterial(mat, 1)
         water.hide(SHADOW_MASK)
         self.water = water
+        self.animated.append(("water", water))
+        if self.map.mesh:
+            return
         # hull waterline foam strip
         foam = MeshBuilder("foam")
         fz = z + 0.02
@@ -213,7 +228,6 @@ class WorldScene:
         fnp.setTexture(self.tex.sprite("smoke"), 1)
         fnp.setLightOff(1)
         fnp.hide(SHADOW_MASK)
-        self.animated.append(("water", water))
 
     # ------------------------------------------------------------------ map
     def _build_map(self):
@@ -287,7 +301,9 @@ class WorldScene:
         node = mb.node()
         node.reparentTo(self.root)
         node.setMaterial(M.make_material("paint"), 1)
-        # railings along the bulwarks
+
+    def _build_railings(self):
+        """Bulwark railings of the procedural ship (y = +-13.3)."""
         rail = MeshBuilder("railings")
         white = (0.86, 0.86, 0.82, 1)
         for s in (1, -1):

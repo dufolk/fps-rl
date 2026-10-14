@@ -282,7 +282,8 @@ class MainMenu:
         self.left = base.a2dLeftCenter.attachNewNode("menu_left")
         self.top = base.a2dTopLeft.attachNewNode("menu_top")
         ui.label(self.top, "FPS-RL", (0.12, -0.2), 0.13, ACCENT)
-        ui.label(self.top, L("运输船 · 沙漠灰 · 占点小镇 · 银行", "Transport Ship · Desert 2 · HP Town · Bank"),
+        ui.label(self.top, L("运输船 · 沙漠灰 · 占点小镇 · 银行 · 生化金字塔",
+                              "Transport Ship · Desert 2 · HP Town · Bank · Bio Pyramid"),
                  (0.13, -0.27), 0.042, DIM)
         self.nav = {}
         items = [("single", L("单人训练", "Single Player")), ("watch", L("观战", "Spectate")),

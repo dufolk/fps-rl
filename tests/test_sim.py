@@ -64,19 +64,19 @@ def test_body_damage_and_ammo():
 
 
 def test_movement_and_collision():
+    from fpsrl.config import PLAYER_RADIUS
     w = World(MatchConfig(team_size=1, seed=1))
     w.reset(1)
     a = w.agents[0]
-    a.pos[:] = a.prev_pos[:] = (-36.4, -6.25, 1.2)  # spawn platform, facing the east parapet
+    a.yaw = 0.0  # CT spawn looks along +X into the bulkhead
     a.vel[:] = 0.0
-    a.yaw = 0.0
-    for _ in range(12):
+    for _ in range(24):
         w.step({a.id: Action(move_forward=1.0)})
     assert np.linalg.norm(a.vel[:2]) > 4.0
-    for _ in range(48):
+    for _ in range(120):
         w.step({a.id: Action(move_forward=1.0)})
-    assert abs(a.pos[0] - (-35.25 - 0.3)) < 0.02, a.pos
-    for _ in range(600):  # run into the bulwark / containers; must never leave the map
+    assert abs(a.pos[0] - (-26.375 - PLAYER_RADIUS)) < 0.02, a.pos
+    for _ in range(600):  # run along the deck; must never leave the map
         w.step({a.id: Action(move_forward=1.0, move_right=0.6)})
     (x0, y0), (x1, y1) = w.map.bounds
     assert x0 <= a.pos[0] <= x1 and y0 <= a.pos[1] <= y1

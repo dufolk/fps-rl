@@ -162,6 +162,9 @@ class Agent:
         self.armor = 0.0  # fraction of damage absorbed
         self.helmet = False
         self.frozen = False  # freeze time / R6 attacker prep: can look, cannot move or shoot
+        self.role = "human"  # bio: human / mother / zombie
+        self.speed_mult = 1.0
+        self.knock_until = 0.0  # bio: ground friction is reduced while a shove plays out
         self.busy: tuple | None = None  # (kind, start, duration, data) of a hold action (plant, defuse ...)
         self.flash_until = 0.0
         self.flash_t0 = 0.0
@@ -450,6 +453,9 @@ class World:
         a.busy = None
         a.flash_until = 0.0
         a.view_mode, a.view_ref = 0, -1
+        a.role = "human"
+        a.speed_mult = 1.0
+        a.knock_until = 0.0
         if not keep_inventory:
             a.armor = 0.0
             a.helmet = False
@@ -629,6 +635,8 @@ class World:
     def switch_weapon(self, a: Agent, slot: int):
         if slot == a.slot or slot not in a.inv:
             return False
+        if getattr(a, "role", "human") != "human" and slot != SLOT_MELEE:
+            return False
         ws = a.inv[slot]
         if ws.spec.kind in ("grenade", "gadget") and ws.mag <= 0:
             return False
@@ -696,7 +704,7 @@ class World:
         if wl > 1.0:
             wish /= wl
             wl = 1.0
-        maxspeed = C.RUN_SPEED * spec.move_mult * self.mode.move_scale
+        maxspeed = C.RUN_SPEED * spec.move_mult * self.mode.move_scale * getattr(a, "speed_mult", 1.0)
         if a.ads:
             maxspeed *= spec.ads_move_mult
         if a.crouching:
@@ -713,11 +721,13 @@ class World:
         vxy = a.vel[:2].copy()
         jumped = False
         if a.on_ground:
+            # a knocked-back zombie slides: friction and control are cut while the shove lasts
+            knocked = self.time < a.knock_until
             speed = float(np.hypot(*vxy))
             if speed > 1e-6:
-                drop = max(speed, C.STOP_SPEED) * C.FRICTION * dt
+                drop = max(speed, C.STOP_SPEED) * C.FRICTION * (0.15 if knocked else 1.0) * dt
                 vxy *= max(speed - drop, 0.0) / speed
-            vxy = self._accelerate(vxy, wishdir, wishspeed, C.GROUND_ACCEL, dt)
+            vxy = self._accelerate(vxy, wishdir, wishspeed, C.GROUND_ACCEL * (0.25 if knocked else 1.0), dt)
             if act.jump and self.time >= a.next_jump and not self._overlaps(a.pos + [0, 0, 0.1], a.height).any():
                 a.vel[2] = C.JUMP_SPEED
                 a.on_ground = False
@@ -1155,6 +1165,9 @@ class World:
         if attacker is not None and attacker.team == victim.team and attacker.id != victim.id \
                 and not self.cfg.friendly_fire and weapon not in ("frag", "molotov"):
             return 0.0
+        if kind == "melee" and attacker is not None and getattr(self.mode, "try_infect", None) \
+                and self.mode.try_infect(attacker, victim):
+            return 0.0
         armored_hit = kind == "explosion" or (kind == "bullet" and (group == 1 or (group == 0 and victim.helmet)))
         if victim.armor > 0.0 and armored_hit:
             amount *= 1.0 - victim.armor
@@ -1168,6 +1181,7 @@ class World:
                 attacker.damage_dealt += dealt
         self._emit("damage", attacker=attacker.id if attacker else -1, victim=victim.id,
                    amount=dealt, group=group, weapon=weapon, kind=kind)
+        self.mode.on_damage(victim, attacker, float(amount), direction, weapon, kind)
         if victim.hp <= 0.0:
             self._kill(victim, attacker, weapon, group == 0)
         return dealt

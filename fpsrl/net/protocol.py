@@ -17,7 +17,7 @@ import numpy as np
 from ..sim import Action, Fire, Projectile, Smoke, WeaponState
 from ..weapons import NUM_SLOTS, PRIMARY_CHOICES, WEAPONS
 
-VERSION = 3
+VERSION = 4
 DEFAULT_PORT = 47777
 DISCOVERY_PORT = 47778
 DISCOVER_MAGIC = b"FPSRL-DISCOVER-1"
@@ -148,7 +148,9 @@ def agent_state(a) -> list:
             [_r(a.lean, 2), _r(a.lean_off), int(a.money), _r(a.armor, 2), bool(a.helmet),
              busy, _r(a.flash_until), _r(a.flash_t0),
              a.view_mode, a.view_ref, a.operator, _r(a.spotted_until), a.loadout.get("primary"),
-             a.loadout.get("secondary"), _r(a.cook_until)]]
+             a.loadout.get("secondary"), _r(a.cook_until),
+             int(a.team), str(getattr(a, "role", "human")), _r(getattr(a, "speed_mult", 1.0)),
+             _r(getattr(a, "knock_until", 0.0))]]
 
 
 def apply_agent(a, s, movement: bool = True, look: bool = True):
@@ -156,7 +158,12 @@ def apply_agent(a, s, movement: bool = True, look: bool = True):
      protect_until, spawn_time, p0, p1, bloom, kills, deaths, hs, killer, respawn_at, death_time, next_jump,
      primary, throw_at, step_dist, ext) = s
     (lean, lean_off, money, armor, helmet, busy, flash_until, flash_t0, view_mode, view_ref, operator, spotted,
-     lo_primary, lo_secondary, cook_until) = ext
+     lo_primary, lo_secondary, cook_until) = ext[:15]
+    if len(ext) >= 19:  # bio: team / role / speed / knockback (absent in version-3 packets)
+        a.team = int(ext[15])
+        a.role = ext[16] if ext[16] in ("human", "zombie", "mother") else "human"
+        a.speed_mult = float(ext[17])
+        a.knock_until = float(ext[18])
     if movement:
         a.pos[:] = pos
         a.vel[:] = vel

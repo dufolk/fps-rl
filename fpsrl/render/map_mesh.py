@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 import numpy as np
-from panda3d.core import Geom, GeomNode, GeomTriangles, GeomVertexData, NodePath
+from panda3d.core import ColorWriteAttrib, Geom, GeomNode, GeomTriangles, GeomVertexData, NodePath
 
 from . import models as M
 from .meshes import vertex_format
@@ -67,6 +67,12 @@ def _geom_node(name, pos, uv, tri):
     return NodePath(node)
 
 
+def has_sky_shell(name) -> bool:
+    """True when the imported map is sealed by a sky shell (nothing outside it should be drawn)."""
+    path = os.path.join(DATA, name, "mesh.npz")
+    return os.path.exists(path) and "sky_pos" in np.load(path).files
+
+
 def build(parent, name, ts_normal):
     """Attach the imported mesh `name` under `parent`; returns its root NodePath."""
     folder = os.path.join(DATA, name)
@@ -83,4 +89,23 @@ def build(parent, name, ts_normal):
         np_.setTexture(ts_normal, flat, 1)
         surface = "wood" if any(w in str(label) for w in WOOD) else "cloth"
         np_.setMaterial(M.make_material(surface), 1)
+    if "sky_pos" in d.files:
+        _sky_mask(root, d["sky_pos"].astype(np.float64), d["sky_tri"])
     return root
+
+
+def _sky_mask(root, pos, tri):
+    """The BSP's sky-shell faces: depth only, drawn right after the sky dome, so whatever lies past the
+    map's edge (the procedural ground and backdrop) is hidden behind sky, as in Source."""
+    from .world_scene import SHADOW_MASK
+    uv = np.zeros((len(pos), 2))
+    node = _geom_node("sky_shell", pos, uv, tri)
+    node.reparentTo(root)
+    node.setAttrib(ColorWriteAttrib.make(ColorWriteAttrib.C_off))
+    node.setBin("background", 10)
+    node.setDepthWrite(True)
+    node.setLightOff(1)
+    node.setFogOff(1)
+    node.setShaderOff(1)
+    node.setTextureOff(1)
+    node.hide(SHADOW_MASK)

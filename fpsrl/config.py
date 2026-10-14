@@ -7,7 +7,7 @@ Pitch is positive when looking up.
 TICK_RATE = 60
 
 GRAVITY = 20.0
-JUMP_SPEED = 6.3
+JUMP_SPEED = 7.8  # apex ~1.46 m at 60 Hz (clears 1.2-1.4 m ledges); crouch jump (legs tucked) clears ~2.0 m
 JUMP_COOLDOWN = 0.2
 
 PLAYER_RADIUS = 0.3

@@ -1,9 +1,11 @@
 from .base import GameMode, TeamDeathmatch
+from .bio import Biohazard
 from .domination import Domination
 from .rounds import ATT, DEF, BombDefusal, Elimination, RoundMode
 from .siege import Siege
 
-MODE_CLASSES = {"tdm": TeamDeathmatch, "dom": Domination, "bomb": BombDefusal, "elim": Elimination, "r6": Siege}
+MODE_CLASSES = {"tdm": TeamDeathmatch, "dom": Domination, "bomb": BombDefusal, "elim": Elimination,
+                "r6": Siege, "bio": Biohazard}
 
 
 def make_mode(world) -> GameMode:
@@ -11,4 +13,4 @@ def make_mode(world) -> GameMode:
 
 
 __all__ = ["GameMode", "TeamDeathmatch", "Domination", "BombDefusal", "Elimination", "RoundMode",
-           "Siege", "MODE_CLASSES", "make_mode", "ATT", "DEF"]
+           "Siege", "Biohazard", "MODE_CLASSES", "make_mode", "ATT", "DEF"]

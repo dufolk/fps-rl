@@ -1,31 +1,60 @@
-"""Cargo-ship deck map inspired by CrossFire's "Transport Ship".
+"""Transport Ship, from the CrossFire remake BSP (workshop 970165514).
 
-The deck runs along X (-40..40) and Y (-13..13). Team 0 spawns on the raised
-platform at the west end, team 1 at the east end. Everything on the west half
-is defined once and point-mirrored ((x, y) -> (-x, -y)) so both sides are fair.
+The render mesh and brush collision come from tools/import_bsp.py. CT is team 0, T is team 1.
+
+The BSP's own cargo (CS:GO static props) is not packed in the map, so the open main deck and the
+hull corridors were bare. On top of the import this module adds:
+  * the container / crate cover of the old box-built ship, point-mirrored and fitted onto the main deck;
+  * crate steps up the deck-side container stacks and out of the corridor ladder pits (ladders are
+    not simulated);
+  * cover crates along both hull corridors.
+Every added box is set on the highest imported surface under it and dropped if it would cut into
+the imported geometry, so a re-import cannot bury or float them.
 """
 from __future__ import annotations
 
-from .base import Box, MapData, Prop
+import numpy as np
+
+from .base import Box, MapData
+from .imported import load
 
 CONT_L, CONT_W, CONT_H = 6.06, 2.44, 2.59
 CRATE = 0.85
 BIG_CRATE = 1.2
 
+# Main deck measured from collision.npz: deck top z = 2.85 over x -24..22, y -11.9..7.6
+# (the cargo hold below it is sealed). The old layout spanned x -40..40, y -13..13 around (0, 0).
+DECK_Z = 2.85
+DECK_CX, DECK_CY = -1.0, -2.17
+X_SCALE, Y_SCALE = 0.72, 0.72
 
-def _mirror_box(b: Box) -> Box:
-    params = dict(b.params)
-    if "door" in params:
-        params["door"] = -params["door"]
-    return Box((-b.mx[0], -b.mx[1], b.mn[2]), (-b.mn[0], -b.mn[1], b.mx[2]), b.mat,
-               b.solid, b.blocks_bullets, b.visible, b.tag, params)
-
-
-def _mirror_prop(p: Prop) -> Prop:
-    params = dict(p.params)
-    if "yaw" in params:
-        params["yaw"] = params["yaw"] + 180.0
-    return Prop(p.kind, (-p.pos[0], -p.pos[1], p.pos[2]), params)
+# (x0, y0, levels, size, z hint) crate stacks; z hint = roughly the surface they stand on.
+STEPS = [
+    # north side: deck -> single container (5.25) -> double container (7.65)
+    # (the stacks start at y 7.65; the upper containers at x -20.38 and -2.62)
+    (-23.5, 6.45, 1, BIG_CRATE, DECK_Z),
+    (-21.7, 8.6, 1, BIG_CRATE, 5.25),
+    (-5.6, 6.45, 1, BIG_CRATE, DECK_Z),
+    (-3.92, 8.6, 1, BIG_CRATE, 5.25),
+    (19.4, 6.45, 1, BIG_CRATE, DECK_Z),
+    # south side: single container (5.25) -> double container (7.68, ends at x 1.56)
+    (1.68, -14.2, 1, BIG_CRATE, 5.25),
+    # corridor ladder pits (floor 0.65, deck 2.85): two-step stacks against the ladder wall
+    (9.45, -14.3, 2, CRATE, 0.65),
+    (8.6, -14.3, 1, CRATE, 0.65),
+    (-11.35, 9.6, 2, CRATE, 0.65),
+    (-10.5, 9.6, 1, CRATE, 0.65),
+]
+# cover in the hull corridors (floor 0.65, 3 m wide): alternate walls, leave ~1.9 m to pass
+CORRIDOR = [
+    # south corridor, y -14.92 .. -11.92, x -26 .. 10
+    (-23.0, -14.85, 1, CRATE), (-18.0, -12.8, 2, CRATE), (-13.0, -14.85, 1, BIG_CRATE),
+    (-7.5, -12.8, 1, CRATE), (-2.5, -14.85, 2, CRATE), (3.0, -13.15, 1, BIG_CRATE),
+    # north corridor, y 7.58 .. 10.58, x -10 .. 24
+    (-6.0, 9.7, 1, CRATE), (-1.0, 7.65, 2, CRATE), (4.5, 9.35, 1, BIG_CRATE),
+    (10.0, 7.65, 1, CRATE), (15.0, 9.7, 2, CRATE), (20.0, 7.65, 1, BIG_CRATE),
+]
+SPAWN_CLEAR = 2.5
 
 
 def _container(cx, cy, along, colors, z0=0.0, door=1):
@@ -34,8 +63,7 @@ def _container(cx, cy, along, colors, z0=0.0, door=1):
     for level, color in enumerate(colors):
         z = z0 + level * CONT_H
         out.append(Box((cx - hx, cy - hy, z), (cx + hx, cy + hy, z + CONT_H),
-                       f"container_{color}", tag="container",
-                       params={"along": along, "door": door}))
+                       f"container_{color}", tag="container", params={"along": along, "door": door}))
     return out
 
 
@@ -45,141 +73,134 @@ def _crate(x0, y0, levels=1, size=CRATE, z0=0.0):
             for i in range(levels)]
 
 
-def _barrel(x, y, color):
-    r = 0.3
-    return (Box((x - r, y - r, 0.0), (x + r, y + r, 0.9), "barrel", visible=False, tag="barrel"),
-            Prop("barrel", (x, y, 0.0), {"color": color}))
+def _mirror(b: Box) -> Box:
+    params = dict(b.params)
+    if "door" in params:
+        params["door"] = -params["door"]
+    return Box((-b.mx[0], -b.mx[1], b.mn[2]), (-b.mn[0], -b.mn[1], b.mx[2]), b.mat,
+               b.solid, b.blocks_bullets, b.visible, b.tag, params)
+
+
+def _legacy_groups() -> list[list[Box]]:
+    """Old box-ship cover (deck at z = 0, centred on the origin) as stacks that move together."""
+    half = [
+        _container(-26.0, 7.5, "x", ["red"]) + _crate(-24.5, 7.2, 1, z0=CONT_H),
+        _container(-15.0, 7.8, "x", ["blue", "orange"], door=-1),
+        _container(-21.0, -5.5, "x", ["green"]),
+        _container(-9.0, -9.8, "x", ["yellow"]),
+        _container(-6.0, 2.5, "y", ["white"]),
+        _crate(-31.0, 7.1, 1), _crate(-30.15, 7.1, 2),
+        _crate(-25.75, -6.0, 1), _crate(-24.9, -6.0, 2),
+        _crate(-26.1, 1.9, 1, BIG_CRATE), _crate(-10.6, -2.6, 1, BIG_CRATE),
+        _crate(-19.4, 0.8, 1), _crate(-19.4, 1.65, 2),
+        _crate(-20.6, 10.9, 1, BIG_CRATE), _crate(-3.6, 7.0, 1, BIG_CRATE),
+        _crate(-14.5, -11.5, 1),
+    ]
+    return half + [[_mirror(b) for b in g] for g in half] + [_container(0.0, 0.0, "y", ["teal"])]
+
+
+def _shift(group: list[Box], dx: float, dy: float, dz: float) -> list[Box]:
+    return [Box((b.mn[0] + dx, b.mn[1] + dy, b.mn[2] + dz), (b.mx[0] + dx, b.mx[1] + dy, b.mx[2] + dz),
+                b.mat, b.solid, b.blocks_bullets, b.visible, b.tag, dict(b.params)) for b in group]
+
+
+def _bounds(group):
+    return (np.min([b.mn for b in group], axis=0), np.max([b.mx for b in group], axis=0))
+
+
+class _Fitter:
+    """Sets added stacks on the imported floor and rejects ones that would intersect it."""
+
+    def __init__(self, boxes: list[Box], spawns):
+        self.mn = np.array([b.mn for b in boxes], np.float64)
+        self.mx = np.array([b.mx for b in boxes], np.float64)
+        self.spawns = np.array([s[:2] for team in spawns.values() for s in team], np.float64)
+        self.placed: list[tuple[np.ndarray, np.ndarray]] = []
+        self.dropped = 0
+
+    def _xy_hits(self, lo, hi, pad=0.0):
+        return ((self.mn[:, 0] < hi[0] - pad) & (self.mx[:, 0] > lo[0] + pad)
+                & (self.mn[:, 1] < hi[1] - pad) & (self.mx[:, 1] > lo[1] + pad))
+
+    def floor(self, lo, hi, z_hint: float) -> float | None:
+        """Highest imported top under the footprint within 0.4 m of z_hint."""
+        hit = self._xy_hits(lo, hi, 0.05) & (np.abs(self.mx[:, 2] - z_hint) < 0.4)
+        return float(self.mx[hit, 2].max()) if hit.any() else None
+
+    def clear(self, lo, hi) -> bool:
+        hit = self._xy_hits(lo, hi, 0.02) & (self.mn[:, 2] < hi[2] - 0.02) & (self.mx[:, 2] > lo[2] + 0.02)
+        if hit.any():
+            return False
+        for a, b in self.placed:
+            if np.all(a[:2] < hi[:2] - 0.02) and np.all(b[:2] > lo[:2] + 0.02) and a[2] < hi[2] and b[2] > lo[2]:
+                return False
+        if len(self.spawns):
+            cx, cy = np.clip(self.spawns[:, 0], lo[0], hi[0]), np.clip(self.spawns[:, 1], lo[1], hi[1])
+            if np.any(np.hypot(self.spawns[:, 0] - cx, self.spawns[:, 1] - cy) < SPAWN_CLEAR):
+                return False
+        return True
+
+    def put(self, group: list[Box], z_hint: float, out: list[Box]) -> bool:
+        """`group` has its base at z = 0; set it on the floor near z_hint if it fits."""
+        lo, hi = _bounds(group)
+        z = self.floor(lo, hi, z_hint)
+        if z is None:
+            self.dropped += 1
+            return False
+        moved = _shift(group, 0.0, 0.0, z)
+        lo, hi = _bounds(moved)
+        if not self.clear(lo, hi):
+            self.dropped += 1
+            return False
+        self.placed.append((lo, hi))
+        out += moved
+        return True
+
+
+def _deck_cover(fit: _Fitter) -> list[Box]:
+    out: list[Box] = []
+    containers, crates = [], []
+    for g in _legacy_groups():
+        lo, hi = _bounds(g)
+        c = (lo + hi) / 2
+        moved = _shift(g, c[0] * (X_SCALE - 1) + DECK_CX, c[1] * (Y_SCALE - 1) + DECK_CY, 0.0)
+        (containers if g[0].tag == "container" else crates).append(moved)
+    for g in containers:
+        fit.put(g, DECK_Z, out)
+    for g in crates:
+        # scaling the layout moves a crate stack into the container it leaned on: push it out
+        lo, hi = _bounds(g)
+        for a, b in fit.placed:
+            if lo[2] > 0.1 or not (np.all(a[:2] < hi[:2]) and np.all(b[:2] > lo[:2])):
+                continue
+            pen = [b[0] - lo[0], hi[0] - a[0], b[1] - lo[1], hi[1] - a[1]]
+            k = int(np.argmin(pen))
+            d = pen[k] + 0.02
+            g = _shift(g, (d, -d, 0, 0)[k], (0, 0, d, -d)[k], 0.0)
+            lo, hi = _bounds(g)
+        fit.put(g, DECK_Z, out)
+    return out
 
 
 def build() -> MapData:
-    half: list[Box] = []
-    props: list[Prop] = []
-
-    # --- West superstructure (team 0 base) -------------------------------------------
-    half.append(Box((-46.0, -13.6, 0.0), (-40.0, 13.6, 7.5), "superstructure", tag="house"))
-    half.append(Box((-40.0, -9.0, 0.0), (-35.0, 9.0, 1.2), "steel_plate", tag="platform"))
-    # centre stairs
-    half.append(Box((-35.0, -2.5, 0.0), (-34.0, 2.5, 0.8), "steel_plate", tag="stairs"))
-    half.append(Box((-34.0, -2.5, 0.0), (-33.0, 2.5, 0.4), "steel_plate", tag="stairs"))
-    # side stairs (both sides of the platform)
-    for s in (1, -1):
-        y_a, y_b = sorted((s * 9.0, s * 10.0))
-        y_c, y_d = sorted((s * 10.0, s * 11.0))
-        half.append(Box((-39.0, y_a, 0.0), (-36.0, y_b, 0.8), "steel_plate", tag="stairs"))
-        half.append(Box((-39.0, y_c, 0.0), (-36.0, y_d, 0.4), "steel_plate", tag="stairs"))
-        # platform parapet beside the centre stairs
-        y0, y1 = sorted((s * 2.5, s * 9.0))
-        half.append(Box((-35.25, y0, 1.2), (-35.0, y1, 2.15), "parapet", tag="parapet"))
-    # cargo hatch in front of the base
-    half.append(Box((-31.0, -3.0, 0.0), (-27.0, 3.0, 0.4), "hatch", tag="hatch"))
-
-    # --- Containers ------------------------------------------------------------------
-    half += _container(-26.0, 7.5, "x", ["red"])
-    half += _container(-15.0, 7.8, "x", ["blue", "orange"], door=-1)
-    half += _container(-21.0, -5.5, "x", ["green"])
-    half += _container(-9.0, -9.8, "x", ["yellow"])
-    half += _container(-6.0, 2.5, "y", ["white"])
-
-    # --- Crates ----------------------------------------------------------------------
-    half += _crate(-31.0, 7.1, 1)            # climb route onto the red container
-    half += _crate(-30.15, 7.1, 2)
-    half += _crate(-24.5, 7.2, 1, z0=CONT_H)  # cover on top of the red container
-    half += _crate(-25.75, -6.0, 1)          # climb route onto the green container
-    half += _crate(-24.9, -6.0, 2)
-    half += _crate(-26.1, 1.9, 1, BIG_CRATE)
-    half += _crate(-10.6, -2.6, 1, BIG_CRATE)
-    half += _crate(-19.4, 0.8, 1)
-    half += _crate(-19.4, 1.65, 2)
-    half += _crate(-20.6, 10.9, 1, BIG_CRATE)
-    half += _crate(-3.6, 7.0, 1, BIG_CRATE)
-    half += _crate(-14.5, -11.5, 1)
-
-    # --- Barrels ---------------------------------------------------------------------
-    for x, y, c in ((-33.0, -11.6, "blue"), (-32.3, -12.25, "red"), (-33.65, -12.3, "blue"),
-                    (-12.6, 12.2, "red"), (-13.3, 12.3, "blue")):
-        b, p = _barrel(x, y, c)
-        half.append(b)
-        props.append(p)
-
-    # --- Crane pillars ---------------------------------------------------------------
-    half.append(Box((-22.4, 12.2, 0.0), (-21.6, 13.0, 11.0), "mast", tag="mast"))
-    props.append(Prop("crane_boom", (-22.0, 12.6, 11.0), {"yaw": -65.0}))
-
-    # --- Deck lamps (visual) ---------------------------------------------------------
-    for x in (-30.0, -18.0, -6.0):
-        props.append(Prop("lamp", (x, 13.05, 1.1), {"yaw": -90.0}))
-        props.append(Prop("lamp", (x + 6.0, -13.05, 1.1), {"yaw": 90.0}))
-
-    boxes = list(half) + [_mirror_box(b) for b in half]
-    props = list(props) + [_mirror_prop(p) for p in props]
-
-    # --- Self-symmetric centre pieces --------------------------------------------------
-    boxes += _container(0.0, 0.0, "y", ["teal"])
-
-    # --- Deck, bulwarks and invisible clip walls --------------------------------------
-    boxes.append(Box((-46.0, -13.6, -1.0), (46.0, 13.6, 0.0), "deck", tag="deck"))
-    for s in (1, -1):
-        y0, y1 = sorted((s * 13.0, s * 13.6))
-        boxes.append(Box((-40.0, y0, 0.0), (40.0, y1, 1.1), "bulwark", tag="bulwark"))
-        y0, y1 = sorted((s * 13.0, s * 14.5))
-        boxes.append(Box((-46.0, y0, 1.1), (46.0, y1, 16.0), "clip",
-                         blocks_bullets=False, visible=False, tag="clip"))
-
-    # --- Visual-only dressing ----------------------------------------------------------
-    deco: list[Box] = []
-    for s in (1, -1):
-        y0, y1 = sorted((s * 13.6, s * 14.0))
-        deco.append(Box((-47.0, y0, -9.0), (47.0, y1, 1.1), "hull", solid=False, blocks_bullets=False))
-    for sx in (1, -1):
-        x0, x1 = sorted((sx * 46.0, sx * 47.0))
-        deco.append(Box((x0, -13.6, -9.0), (x1, 13.6, 1.1), "hull", solid=False, blocks_bullets=False))
-        # upper superstructure tiers + funnel
-        x0, x1 = sorted((sx * 46.0, sx * 41.5))
-        deco.append(Box((x0, -10.0, 7.5), (x1, 10.0, 10.5), "superstructure", solid=False, blocks_bullets=False))
-        x0, x1 = sorted((sx * 46.0, sx * 43.0))
-        deco.append(Box((x0, -6.0, 10.5), (x1, 6.0, 12.8), "superstructure", solid=False, blocks_bullets=False))
-        x0, x1 = sorted((sx * 45.5, sx * 43.8))
-        deco.append(Box((x0, -1.4, 12.8), (x1, 1.4, 16.5), "funnel", solid=False, blocks_bullets=False))
-        # bridge wing
-        x0, x1 = sorted((sx * 43.0, sx * 41.5))
-        deco.append(Box((x0, -13.4, 10.2), (x1, 13.4, 10.5), "steel_plate", solid=False, blocks_bullets=False))
-    boxes += deco
-
-    # Antennas / radar on top of the superstructure.
-    for sx in (1, -1):
-        props.append(Prop("antenna", (sx * 44.5, 3.5, 12.8), {}))
-        props.append(Prop("radar", (sx * 44.5, -3.0, 12.8), {}))
-        props.append(Prop("door", (sx * 40.0, 0.0, 1.2), {"yaw": 0.0 if sx < 0 else 180.0}))
-
-    spawns = {0: [], 1: []}
-    for y in (-7.5, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5, -6.25, 6.25, -1.25, 1.25):
-        spawns[0].append((-37.8 + (0.0 if abs(y) % 2.5 < 1e-6 else 1.4), y, 1.2, 0.0))
-        spawns[1].append((37.8 - (0.0 if abs(y) % 2.5 < 1e-6 else 1.4), -y, 1.2, 180.0))
-
-    pts_half = [(-20.0, 11.5), (-20.0, -2.0), (-12.0, -12.0), (-3.0, 5.0), (-28.0, -8.0),
-                (-9.0, 0.5), (-14.0, 4.0), (-27.0, 11.5), (-16.0, -9.0), (-3.0, -6.0)]
-    strategic = pts_half + [(-x, -y) for x, y in pts_half] + [(0.0, 7.0), (0.0, -7.0)]
-
-    for sx in (1, -1):
-        props.append(Prop("ship_bow_lights", (sx * 47.0, 0.0, 1.1), {}))
-
+    boxes, spawns, bounds, strategic, ztop, sea = load("transport_ship")
+    fit = _Fitter(boxes, spawns)
+    added = _deck_cover(fit)
+    for x0, y0, levels, size, z_hint in STEPS:
+        fit.put(_crate(x0, y0, levels, size), z_hint, added)
+    for x0, y0, levels, size in CORRIDOR:
+        fit.put(_crate(x0, y0, levels, size), 0.65, added)
     return MapData(
         name="transport_ship",
-        boxes=boxes,
-        props=props,
+        boxes=boxes + added,
+        props=[],
         spawns=spawns,
-        bounds=((-40.0, -13.0), (40.0, 13.0)),
+        bounds=bounds,
         strategic_points=strategic,
-        water_z=-5.0,
+        water_z=sea if sea is not None else -4.0,
         sun_dir=(-0.62, 0.42, -0.42),
         theme="ship",
-        modes=("tdm", "dom"),
-        objectives={"points": [
-            {"name": "A", "poly": [[-26.0, -3.5], [-18.0, -3.5], [-18.0, 3.5], [-26.0, 3.5]], "zmin": -0.5, "zmax": 3.0,
-             "z": 0.0},
-            {"name": "B", "poly": [[-4.5, -6.0], [4.5, -6.0], [4.5, 6.0], [-4.5, 6.0]], "zmin": -0.5, "zmax": 3.5,
-             "z": 0.0},
-            {"name": "C", "poly": [[18.0, -3.5], [26.0, -3.5], [26.0, 3.5], [18.0, 3.5]], "zmin": -0.5, "zmax": 3.0,
-             "z": 0.0},
-        ]},
+        modes=("tdm", "bio"),
+        nav_max_floor=ztop,
+        mesh="transport_ship",
     )

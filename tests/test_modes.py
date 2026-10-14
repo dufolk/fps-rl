@@ -342,9 +342,94 @@ def test_elimination_wipe_and_draw():
 
 def test_mode_selects_its_map():
     assert resolve_map_mode("transport_ship", "r6") == ("bank", "r6")
+    assert resolve_map_mode("transport_ship", "dom") == ("hp_town", "dom")
     assert resolve_map_mode("bank", "elim") == ("desert2", "elim")
     assert resolve_map_mode("desert2", "bomb") == ("desert2", "bomb")
     assert resolve_map_mode("hp_town", "tdm") == ("hp_town", "tdm")
+    assert resolve_map_mode("pyramid", "bio") == ("pyramid", "bio")
+
+
+def test_bio_infection_and_rounds():
+    from fpsrl.weapons import SLOT_MELEE
+
+    w = World(MatchConfig(team_size=1, map_name="pyramid", mode="bio", seed=1,
+                          mode_params={"infect_delay": 0.05, "round_time": 30.0, "post_time": 30.0,
+                                       "mother_count": 1, "wins_needed": 2}))
+    w.reset(1)
+    assert all(getattr(a, "role", "") == "human" for a in w.agents)
+    _run(w, 0.12)
+    mothers = [a for a in w.agents if a.role == "mother"]
+    humans = [a for a in w.agents if a.role == "human"]
+    assert w.mode.phase == "live" and len(mothers) == 1 and len(humans) == 1
+    mother, human = mothers[0], humans[0]
+    assert mother.slot == SLOT_MELEE and SLOT_PRIMARY not in mother.inv and mother.hp == 6000
+    assert abs(mother.speed_mult - 1.15) < 1e-6
+    bot = Bot(w, mother.id)
+    bot.reset(1)
+    chase = bot.act()
+    assert chase.move_forward != 0.0 or chase.move_right != 0.0 or chase.fire
+    human.pos[:] = mother.pos + np.array([0.8, 0.0, 0.0])
+    human.prev_pos[:] = human.pos
+    mother.yaw = 0.0
+    w._melee(mother, mother.weapon.spec, heavy=False)
+    ev = _run(w, 0.25)
+    assert human.role == "zombie" and human.alive and human.deaths == 0
+    assert human.slot == SLOT_MELEE and abs(human.speed_mult - 1.25) < 1e-6
+    assert any(e["type"] == "infected" and e["agent"] == human.id for e in ev)
+    assert any(e["type"] == "round_end" and e["reason"] == "infected" and e["team"] == 1 for e in ev)
+    assert w.mode.wins == [0, 1]
+    fallen = w.agents[0]
+    fallen.alive = False
+    fallen.respawn_at = w.time
+    _run(w, 0.3)
+    assert not fallen.alive
+
+    w = World(MatchConfig(team_size=1, map_name="transport_ship", mode="bio", seed=2,
+                          mode_params={"infect_delay": 10.0, "round_time": 0.2, "post_time": 30.0}))
+    w.reset(2)
+    assert all(a.role == "human" for a in w.agents)
+    ev = _run(w, 0.35)
+    assert any(e["type"] == "round_end" and e["reason"] == "time" and e["team"] == 0 for e in ev)
+    assert w.mode.wins == [1, 0]
+
+
+def test_bio_knockback():
+    w = World(MatchConfig(team_size=2, map_name="pyramid", mode="bio", seed=3,
+                          mode_params={"infect_delay": 0.05, "round_time": 60.0, "mother_count": 1}))
+    w.reset(3)
+    _run(w, 0.12)
+    assert w.mode.phase == "live"
+    humans = [a for a in w.agents if a.role == "human"]
+    shooter, other = humans[0], humans[1]
+    zombie = humans[2]
+    w.mode._turn(zombie, mother=False)
+    mother = next(a for a in w.agents if a.role == "mother")
+    d = np.array([0.0, 1.0, 0.0])
+
+    def shove(victim, weapon, amount=40.0):
+        victim.vel[:] = 0.0
+        victim.on_ground = True
+        w.apply_damage(victim, amount, shooter, weapon, direction=d)
+        return victim.vel.copy()
+
+    v = shove(zombie, "ak47")
+    assert v[1] > 1.0 and abs(v[0]) < 1e-6 and zombie.knock_until > w.time
+    v_shotgun = shove(zombie, "nova")
+    assert v_shotgun[1] > v[1] * 1.4 and v_shotgun[2] > 0.0  # heavy hits also lift a little
+    v_mother = shove(mother, "ak47")
+    assert abs(v_mother[1] - v[1] * 0.5) < 1e-6
+    big = shove(zombie, "nova", 400.0)
+    assert abs(np.hypot(big[0], big[1]) - w.mode.p["knockback_max"]) < 1e-6
+    # the shove carries: a zombie slides several metres before friction wins
+    start = zombie.pos.copy()
+    zombie.vel[:] = 0.0
+    w.apply_damage(zombie, 230.0, shooter, "nova", direction=d)
+    _run(w, 0.8)
+    assert np.hypot(*(zombie.pos - start)[:2]) > 2.0
+    assert shove(other, "ak47")[1] == 0.0  # humans are not shoved
+    zombie.vel[:] = 0.0
+    w.apply_damage(zombie, 40.0, shooter, "knife", direction=d, kind="melee")
+    assert zombie.vel[1] == 0.0
 
 
 def test_maps_reachable():

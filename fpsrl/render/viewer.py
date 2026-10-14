@@ -19,7 +19,7 @@ from ..geometry import raycast_boxes
 from ..sim import LEAN_DIST, LEAN_ROLL, World, dir_from_angles
 from ..weapons import WEAPONS
 from .effects import Effects
-from .models import ModelCache, SoldierModel
+from .models import ModelCache, body_model
 from .textures import TextureLibrary
 from .dynamic_view import DestructView, GadgetView, point_colors
 from .world_scene import MAIN_MASK, WorldScene
@@ -105,7 +105,9 @@ text-encoding utf8
 
 class SoldierView:
     def __init__(self, viewer, agent):
-        self.model = SoldierModel(agent.team, viewer.models)
+        self.viewer = viewer
+        self.kind = getattr(agent, "role", "human")
+        self.model = body_model(self.kind, agent.team, viewer.models)
         self.model.root.reparentTo(viewer.render)
         self.agent_id = agent.id
         self.dead_since = None
@@ -151,6 +153,21 @@ class SoldierView:
         self.hp_fill.setTwoSided(True)
         self.blind_np = self._plate_text("blind", "致盲", (1, 0.96, 0.75, 1), font)
         self.burn_np = self._plate_text("burn", "燃烧", (1, 0.42, 0.1, 1), font)
+
+    def set_kind(self, kind: str, team: int):
+        """Swap the body (soldier <-> zombie) when a bio role changes; name tag and plate move over."""
+        if kind == self.kind:
+            return
+        old = self.model.root
+        self.kind = kind
+        self.model = body_model(kind, team, self.viewer.models)
+        self.model.root.reparentTo(old.getParent())
+        self.model.root.setTransform(old.getTransform())
+        self.tag.reparentTo(self.model.root)
+        self.plate.reparentTo(self.model.root)
+        if old.isHidden():
+            self.model.root.hide()
+        old.removeNode()
 
     def _plate_text(self, name, label, color, font):
         tn = TextNode(name)
@@ -456,7 +473,7 @@ class Viewer:
         cam = self.base.camera
         c = self.scene.center
         r = self.scene.extent * 0.42
-        if self.world.map.theme == "ship":
+        if self.world.map.theme == "ship" and not self.world.map.mesh:
             x = math.sin(t) * 34.0
             y = -24.0 + math.cos(t * 0.7) * 6.0
             z = 9.0 + math.sin(t * 1.3) * 2.5
@@ -841,6 +858,7 @@ class Viewer:
         w = self.world
         for a in w.agents:
             sv = self.soldiers[a.id]
+            sv.set_kind(getattr(a, "role", "human"), a.team)
             m = sv.model
             pos = a.prev_pos + (a.pos - a.prev_pos) * alpha
             m.root.setPos(pos[0], pos[1], pos[2])

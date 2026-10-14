@@ -525,7 +525,10 @@ class HUD:
         self.hp_bar.setColor(*col)
         self.protect_text.setText("PROTECTED" if now < agent.protect_until and agent.alive else "")
         ws = agent.weapon
-        self.weapon_text.setText(item_name(spec.name, self.cjk))
+        if getattr(agent, "role", "human") != "human" and spec.kind == "melee":
+            self.weapon_text.setText("利爪" if self.cjk else "CLAWS")
+        else:
+            self.weapon_text.setText(item_name(spec.name, self.cjk))
         if spec.kind == "gun":
             self.ammo_text.setText(str(ws.mag))
             self.reserve_text.setText(f"/ {ws.reserve}")
@@ -560,7 +563,7 @@ class HUD:
         self.score_l.setText(str(score[0]))
         self.score_r.setText(str(score[1]))
         mode = world.mode
-        if hasattr(mode, "time_left") and mode.name in ("bomb", "elim", "r6"):
+        if hasattr(mode, "time_left") and mode.name in ("bomb", "elim", "r6", "bio"):
             left = mode.time_left()
             if mode.phase == "planted":
                 self.timer_text.setText("C4")
@@ -663,12 +666,17 @@ class HUD:
             self.obj_root.hide()
         # phase / economy
         phase = ""
-        if mode.name in ("bomb", "elim", "r6"):
+        if mode.name in ("bomb", "elim", "r6", "bio"):
             names = {"freeze": ("冻结时间", "FREEZE TIME"), "prep": ("准备阶段", "PREPARATION"),
                      "live": ("", ""), "planted": ("炸弹已安放" if mode.name == "bomb" else "拆弹器已安放",
                                                   "BOMB PLANTED" if mode.name == "bomb" else "DEFUSER PLANTED"),
                      "over": ("回合结束", "ROUND OVER")}
             phase = names.get(mode.phase, ("", ""))[0 if zh else 1]
+            if mode.name == "bio":
+                info = mode.hud(agent.team)
+                count = (f"人类 {info['humans']}  僵尸 {info['zombies']}" if zh else
+                         f"HUMANS {info['humans']}  ZOMBIES {info['zombies']}")
+                phase = (phase + "   " if phase else "") + count
             if getattr(mode, "economy", False) and mode.can_buy_now(agent):
                 left = mode.state().get("buy_left", 0.0)
                 phase = (phase + "   " if phase else "") + (f"购买 {left:.0f}s [B]" if zh else f"BUY {left:.0f}s [B]")

@@ -4,10 +4,11 @@ _CACHE = {}
 
 # name -> (zh display, en display, supported modes)
 MAPS = {
-    "transport_ship": ("运输船", "Transport Ship", ("tdm", "dom")),
+    "transport_ship": ("运输船", "Transport Ship", ("tdm", "bio")),
     "desert2": ("沙漠灰", "Desert 2", ("bomb", "elim", "tdm")),
     "hp_town": ("占点小镇", "HP Town", ("dom", "tdm")),
     "bank": ("银行", "Bank", ("r6", "tdm")),
+    "pyramid": ("生化金字塔", "Bio Pyramid", ("bio",)),
 }
 
 MODES = {
@@ -16,6 +17,7 @@ MODES = {
     "bomb": ("爆破模式", "Bomb Defusal"),
     "elim": ("歼灭模式", "Elimination"),
     "r6": ("彩六模式", "Siege"),
+    "bio": ("生化模式", "Infection"),
 }
 
 
@@ -28,6 +30,8 @@ def _builder(name: str):
         from .hp_town import build
     elif name == "bank":
         from .bank import build
+    elif name == "pyramid":
+        from .pyramid import build
     else:
         raise KeyError(f"unknown map {name!r}")
     return build

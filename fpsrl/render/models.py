@@ -292,8 +292,9 @@ def _limb(name, length, w, d, color, surface="cloth"):
 class SoldierModel:
     """Articulated low-poly soldier. Feet at origin, facing +Y."""
 
-    def __init__(self, team: int, models: ModelCache):
-        st = TEAM_STYLE[team]
+    def __init__(self, team: int, models: ModelCache, style: dict | None = None):
+        st = style or TEAM_STYLE[team]
+        gear = st.get("gear", True)  # vest, pouches, back pack, armbands
         self.style = st
         self.models = models
         self.root = NodePath(f"soldier_{team}")
@@ -311,13 +312,19 @@ class SoldierModel:
         c = ps.b("cloth")
         c.tapered(-0.11, 0.11, 0.32, 0.5, 0.32, 0.5, 0.0, 0.0, st["shirt"])
         c.box((-0.215, -0.12, 0.3), (0.215, 0.12, 0.5), st["shirt"])
-        v = ps.b("poly")
-        v.box((-0.2, -0.135, 0.06), (0.2, 0.135, 0.46), st["vest"])
-        for k in range(3):
-            v.box((-0.16 + k * 0.11, 0.135, 0.1), (-0.07 + k * 0.11, 0.17, 0.24), st["vest"])  # mag pouches
-        v.box((-0.12, -0.19, 0.18), (0.12, -0.135, 0.42), (0.2, 0.2, 0.18, 1))  # back pack
-        ps.b("paint").box((0.212, -0.06, 0.34), (0.226, 0.06, 0.4), st["accent"])  # armband
-        ps.b("paint").box((-0.226, -0.06, 0.34), (-0.212, 0.06, 0.4), st["accent"])
+        if gear:
+            v = ps.b("poly")
+            v.box((-0.2, -0.135, 0.06), (0.2, 0.135, 0.46), st["vest"])
+            for k in range(3):
+                v.box((-0.16 + k * 0.11, 0.135, 0.1), (-0.07 + k * 0.11, 0.17, 0.24), st["vest"])  # mag pouches
+            v.box((-0.12, -0.19, 0.18), (0.12, -0.135, 0.42), (0.2, 0.2, 0.18, 1))  # back pack
+            ps.b("paint").box((0.212, -0.06, 0.34), (0.226, 0.06, 0.4), st["accent"])  # armband
+            ps.b("paint").box((-0.226, -0.06, 0.34), (-0.212, 0.06, 0.4), st["accent"])
+        else:  # torn shirt: bare skin showing through rips on the chest and back
+            sk = ps.b("skin")
+            for x0, z0, z1 in ((-0.16, 0.12, 0.3), (0.02, 0.2, 0.42), (0.1, 0.06, 0.2)):
+                sk.box((x0, 0.105, z0), (x0 + 0.1, 0.125, z1), st["skin"])
+                sk.box((-x0 - 0.1, -0.125, z0), (-x0, -0.105, z1), st["skin"])
         ps.node().reparentTo(self.spine)
 
         self.head = self.spine.attachNewNode("head")
@@ -345,7 +352,8 @@ class SoldierModel:
             self.limbs[side + "_fore"] = _limb("fore", 1, 0.085, 0.085, st["shirt"])
             self.limbs[side + "_fore"].reparentTo(self.arms)
             hand = PartSet("hand")
-            hand.b("cloth").box((-0.04, -0.04, -0.045), (0.04, 0.05, 0.04), GLOVE)
+            hand.b("cloth" if gear else "skin").box((-0.04, -0.04, -0.045), (0.04, 0.05, 0.04),
+                                                    GLOVE if gear else st["skin"])
             self.limbs[side + "_hand"] = hand.node()
             self.limbs[side + "_hand"].reparentTo(self.arms)
 
@@ -355,7 +363,8 @@ class SoldierModel:
             hip.setPos(x, 0, 0.92)
             ps = PartSet("thigh")
             ps.b("cloth").box((-0.075, -0.08, -0.47), (0.075, 0.08, 0.02), st["pants"])
-            ps.b("poly").box((-0.085, -0.02, -0.33), (0.085, 0.09, -0.22), st["vest"])  # thigh pouch / knee pad
+            if gear:
+                ps.b("poly").box((-0.085, -0.02, -0.33), (0.085, 0.09, -0.22), st["vest"])  # thigh pouch
             ps.node().reparentTo(hip)
             knee = hip.attachNewNode(side + "_knee")
             knee.setZ(-0.46)
@@ -468,6 +477,94 @@ class SoldierModel:
         self.spine.setP(pitch * 0.35 + 8 * crouch)
         self.arms.setP(pitch * 0.65 - 8 * crouch)
         self.head.setP(pitch * 0.3)
+
+
+# ----------------------------------------------------------------------------- zombie
+ZOMBIE_STYLE = {
+    "zombie": dict(shirt=(0.35, 0.1, 0.08, 1), pants=(0.22, 0.08, 0.07, 1), vest=(0.2, 0.06, 0.05, 1),
+                   head=(0.5, 0.09, 0.07, 1), helmet=None, accent=(0.9, 0.2, 0.1, 1),
+                   skin=(0.62, 0.12, 0.1, 1), gear=False),
+    "mother": dict(shirt=(0.2, 0.04, 0.04, 1), pants=(0.14, 0.03, 0.03, 1), vest=(0.12, 0.02, 0.02, 1),
+                   head=(0.36, 0.04, 0.04, 1), helmet=None, accent=(1.0, 0.3, 0.1, 1),
+                   skin=(0.45, 0.05, 0.05, 1), gear=False),
+}
+CLAW = (0.86, 0.8, 0.62, 1)
+CLAW_DARK = (0.55, 0.12, 0.08, 1)
+
+
+def build_claw(dark: bool = False, scale: float = 1.0) -> NodePath:
+    """Three curved talons along +Y from a knuckle at the origin (hand frame)."""
+    ps = PartSet("claw")
+    bone = ps.b("chrome")
+    col = CLAW_DARK if dark else CLAW
+    s = scale
+    for x in (-0.026, 0.0, 0.026):
+        bone.tapered(0.03 * s, 0.13 * s, 0.016 * s, 0.018 * s, 0.009 * s, 0.01 * s, -0.01 * s, -0.004 * s, col, x=x * s)
+        bone.tapered(0.13 * s, 0.2 * s, 0.009 * s, 0.01 * s, 0.001 * s, 0.002 * s, -0.004 * s, -0.022 * s, col,
+                     x=x * s)
+    ps.b("skin").box((-0.045 * s, 0.0, -0.025 * s), (0.045 * s, 0.04 * s, 0.025 * s), (0.4, 0.07, 0.06, 1))
+    return ps.node()
+
+
+class ZombieModel(SoldierModel):
+    """Red-skinned infected: no gear, glowing eyes, fangs and claws instead of a weapon.
+
+    Same skeleton and proportions as `SoldierModel`, so it lines up with the hit boxes."""
+
+    def __init__(self, models: ModelCache, mother: bool = False):
+        self.mother = mother
+        super().__init__(1, models, style=ZOMBIE_STYLE["mother" if mother else "zombie"])
+        self.root.setName("zombie_mother" if mother else "zombie")
+        ps = PartSet("zombie_face")
+        g = ps.b("glass")
+        eye = (1.0, 0.55, 0.1, 1) if mother else (1.0, 0.85, 0.2, 1)
+        g.box((-0.065, 0.111, 0.165), (-0.015, 0.122, 0.192), eye)
+        g.box((0.015, 0.111, 0.165), (0.065, 0.122, 0.192), eye)
+        tooth = ps.b("chrome")
+        for x in (-0.04, -0.015, 0.015, 0.04):
+            tooth.box((x - 0.007, 0.104, 0.07), (x + 0.007, 0.118, 0.105), CLAW)
+        ps.b("skin").box((-0.06, 0.1, 0.1), (0.06, 0.12, 0.115), (0.15, 0.02, 0.02, 1))  # open mouth
+        face = ps.node()
+        face.reparentTo(self.head)
+        eyes = face.find("**/zombie_face_glass")
+        if not eyes.isEmpty():
+            eyes.setLightOff(1)
+        if mother:
+            ps = PartSet("spikes")
+            b = ps.b("chrome")
+            for x, z, h in ((-0.15, 0.48, 0.16), (0.15, 0.48, 0.16), (0.0, 0.42, 0.2), (-0.07, 0.3, 0.13),
+                            (0.07, 0.3, 0.13), (0.0, 0.18, 0.11)):
+                b.cylinder((x, -0.12, z), (x * 1.3, -0.12 - h, z + h * 0.6), 0.03, CLAW_DARK, 6, radius1=0.002)
+            ps.node().reparentTo(self.spine)
+        for side in ("r", "l"):
+            c = build_claw(mother, 1.25 if mother else 1.0)
+            c.reparentTo(self.limbs[side + "_hand"])
+            c.setPos(0, 0.04, 0)
+
+    def set_weapon(self, name: str, skin: str | None = None):
+        """Ignore the knife: both arms reach forward, claws out."""
+        if self.weapon_name == "claws":
+            return
+        self.weapon_name, self.weapon_skin = "claws", None
+        hand_r, hand_l = Point3(0.2, 0.44, 0.04), Point3(-0.2, 0.4, -0.02)
+        self._place_limb(self.limbs["r_upper"], self.limbs["r_fore"], (0.21, 0.0, 0.0),
+                         (0.28, 0.2, -0.14), hand_r)
+        self._place_limb(self.limbs["l_upper"], self.limbs["l_fore"], (-0.21, 0.0, 0.0),
+                         (-0.28, 0.18, -0.18), hand_l)
+        self.limbs["r_hand"].setPos(hand_r)
+        self.limbs["l_hand"].setPos(hand_l)
+
+    def pose(self, dt, speed, crouch, pitch, on_ground, lean=0.0):
+        super().pose(dt, speed, crouch, pitch, on_ground, lean)
+        self.spine.setP(self.spine.getP() - 12.0)  # hunched forward, head craned back up
+        self.head.setP(self.head.getP() + 10.0)
+
+
+def body_model(kind: str, team: int, models: ModelCache) -> SoldierModel:
+    """Third-person body for a bio `role` (human / zombie / mother)."""
+    if kind in ("zombie", "mother"):
+        return ZombieModel(models, mother=kind == "mother")
+    return SoldierModel(team, models)
 
 
 # ----------------------------------------------------------------------------- props

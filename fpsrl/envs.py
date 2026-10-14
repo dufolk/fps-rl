@@ -14,7 +14,7 @@ import numpy as np
 from gymnasium import spaces
 
 from .bots import Bot
-from .maps import MAPS
+from .maps import MAPS, resolve_map_mode
 from .obs import ObsBuilder, VectorDictObs, vector_dict_space
 from .sim import Action, MatchConfig, World
 from .weapons import NUM_SLOTS, PRIMARY_CHOICES, SLOT_FRAG, SLOT_SMOKE, random_primary
@@ -237,6 +237,8 @@ class _FPSBase:
         cfg = self.cfg
         if cfg.map_name not in MAPS:
             raise ValueError(f"unknown map {cfg.map_name!r}, choose from {sorted(MAPS)}")
+        if cfg.mode not in MAPS[cfg.map_name][2]:
+            cfg.map_name, cfg.mode = resolve_map_mode(cfg.map_name, cfg.mode)
         n = cfg.team_size
         rng = np.random.default_rng(cfg.seed)
         primaries = []

@@ -11,13 +11,17 @@ from ..weapons import WEAPONS
 from .viewer import gold_tint
 from .effects import _additive, _card
 from .meshes import MeshBuilder
-from .models import GLOVE, TEAM_STYLE, PartSet
+from .models import GLOVE, TEAM_STYLE, ZOMBIE_STYLE, PartSet, build_claw
+
+CLAW_HOLDERS = ("claws", "claws_mother")  # bio zombies swing these instead of the knife
 
 HIP = {
     "ak47": (Point3(0.15, 0.62, -0.2), Vec3(2.0, 0, 0)),
     "awm": (Point3(0.15, 0.66, -0.205), Vec3(2.0, 0, 0)),
     "deagle": (Point3(0.13, 0.52, -0.17), Vec3(2.5, 0, 0)),
     "knife": (Point3(0.13, 0.4, -0.1), Vec3(40, 25, -15)),
+    "claws": (Point3(0.04, 0.56, -0.14), Vec3(0, 10, 0)),
+    "claws_mother": (Point3(0.04, 0.56, -0.14), Vec3(0, 10, 0)),
     "frag": (Point3(0.13, 0.46, -0.105), Vec3(-15, 10, 0)),
     "smoke": (Point3(0.13, 0.46, -0.105), Vec3(-15, 10, 0)),
 }
@@ -219,9 +223,37 @@ class ViewModel:
         fl.hide()
         return fl
 
+    def _ensure_claws(self, name: str):
+        """Two bare red forearms with talons (holder frame: +Y forward)."""
+        if name in self.holders:
+            return
+        mother = name == "claws_mother"
+        st = ZOMBIE_STYLE["mother" if mother else "zombie"]
+        holder = self.pivot.attachNewNode(name)
+        ps = PartSet("arms_" + name)
+        skin = ps.b("skin")
+        for x, d in ((0.11, Vec3(0.3, -0.75, -0.5)), (-0.19, Vec3(-0.3, -0.75, -0.5))):
+            hand = Point3(x, 0.0, 0.0)
+            d.normalize()
+            skin.cbox(hand + Vec3(0, -0.02, -0.01), (0.042, 0.05, 0.036), st["skin"])
+            skin.cylinder(hand + d * 0.03, hand + d * 0.42, 0.034, st["skin"], 10, radius1=0.042)
+            ps.b("cloth").cylinder(hand + d * 0.3, hand + d * 0.46, 0.046, st["shirt"], 10, radius1=0.05)
+            claw = build_claw(mother, 1.3 if mother else 1.12)
+            claw.reparentTo(holder)
+            claw.setPos(hand + Vec3(0, -0.015, 0))
+            claw.setHpr(-12 if x > 0 else 12, 20, 0)  # talons angled up and in so they read from behind
+        ps.node().reparentTo(holder)
+        holder.hide()
+        self.holders[name] = holder
+        self.infos[name] = {}
+        self.styles[name] = "melee"
+
     def _ensure(self, name: str):
         """Build the holder (gun + arms + muzzle flash) for `name` on first use."""
         if name in self.holders:
+            return
+        if name in CLAW_HOLDERS:
+            self._ensure_claws(name)
             return
         spec = WEAPONS[name]
         style = _style(spec)
@@ -288,7 +320,7 @@ class ViewModel:
         """Start the inspect animation for the current weapon (F key)."""
         if self.current is None or (self.anim and self.anim[0] not in ("inspect",)):
             return False
-        kind = WEAPONS[self.current].kind
+        kind = "melee" if self.current in CLAW_HOLDERS else WEAPONS[self.current].kind
         kind = "gun" if kind == "gun" else "knife" if kind == "melee" else "grenade"
         self.inspect_kind = kind
         self._play("inspect", INSPECT[kind][-1][0])
@@ -372,7 +404,11 @@ class ViewModel:
     def update(self, dt, world, agent, mouse_dx, mouse_dy, sun_quat=None):
         if sun_quat is not None:
             self.sun_np.setQuat(sun_quat)
-        name = agent.weapon.name if agent.alive and agent.slot in agent.inv else None
+        weapon = agent.weapon.name if agent.alive and agent.slot in agent.inv else None
+        name = weapon
+        role = getattr(agent, "role", "human")
+        if weapon is not None and role != "human" and WEAPONS[weapon].kind == "melee":
+            name = "claws_mother" if role == "mother" else "claws"
         if name is not None:
             self._ensure(name)
         if name != self.current:
@@ -383,7 +419,7 @@ class ViewModel:
                 self.holders[name].show()
         if name is None:
             return
-        spec = WEAPONS[name]
+        spec = WEAPONS[weapon]
         now = world.time
         target_ads = 1.0 if agent.ads else 0.0
         self.ads_blend += (target_ads - self.ads_blend) * min(1.0, dt * 14.0)

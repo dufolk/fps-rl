@@ -245,11 +245,27 @@ class NavGrid:
                 return best
         return best
 
+    def scc(self) -> np.ndarray:
+        """Strongly connected component per node (drops are one-way), computed once."""
+        lab = getattr(self, "_scc", None)
+        if lab is None:
+            from scipy.sparse import csr_matrix
+            from scipy.sparse.csgraph import connected_components
+            src = [n for n, lst in enumerate(self.adj) for _ in lst]
+            dst = [m for lst in self.adj for m, *_ in lst]
+            g = csr_matrix((np.ones(len(src), dtype=np.int8), (src, dst)), shape=(len(self.nodes),) * 2)
+            _n, lab = connected_components(g, directed=True, connection="strong")
+            self._scc = lab
+        return lab
+
     def _astar(self, s: int, g: int, ok, drop_ok, cost_add):
         nodes = self.nodes
         gp = nodes[g]
         inv = 1.0 / self.cell
-        xs, ys, zs = nodes[:, 0].tolist(), nodes[:, 1].tolist(), nodes[:, 2].tolist()
+        xyz = getattr(self, "_xyz", None)
+        if xyz is None:
+            xyz = self._xyz = (nodes[:, 0].tolist(), nodes[:, 1].tolist(), nodes[:, 2].tolist())
+        xs, ys, zs = xyz
         gx, gy, gz = float(gp[0]), float(gp[1]), float(gp[2])
 
         def h(n):
@@ -337,6 +353,7 @@ class WorldNav:
         if self.version == w.geo_version:
             return
         self.version = w.geo_version
+        self.unreachable = set()
         g = self.grid
         n = len(g.nodes)
         ok = np.ones(n, dtype=bool)
@@ -389,9 +406,17 @@ class WorldNav:
         e = g._nearest(goal, self.loose_list)
         if s < 0 or e < 0:
             return []
+        # A failed search floods the whole graph twice (~30 ms). Reachability is the same for every
+        # node of a strongly connected component, so a miss is remembered per component pair until
+        # the geometry changes (zombies chasing a human on an unreachable box retry constantly).
+        lab = g.scc()
+        key = (int(lab[s]), int(lab[e]))
+        if key in self.unreachable:
+            return []
         path = g._astar(s, e, self.ok_list, self.drop_list, self.cost_list)
         if path is None:
             path = g._astar(s, e, self.loose_list, self.drop_list, self.loose_cost)
         if path is None:
+            self.unreachable.add(key)
             return []
         return g._smooth([g.nodes[i].copy() for i in path], self.ok_list)

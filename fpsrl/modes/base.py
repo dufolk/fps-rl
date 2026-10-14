@@ -54,6 +54,9 @@ class GameMode:
     def give_loadout(self, a):
         self.w.default_loadout(a)
 
+    def on_damage(self, victim, attacker, amount: float, direction, weapon: str, kind: str):
+        """Called after `victim` lost `amount` hp (before the death check)."""
+
     def on_kill(self, victim, attacker, weapon: str, headshot: bool):
         pass
 

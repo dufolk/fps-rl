@@ -59,6 +59,9 @@ class Bot:
         self.replan_at = 0.0
         self.path_geo = -1
         self.planned_at = 0.0
+        self.chase_retry = 0.0  # zombie: no path to the target, roam until then
+        self.direct_check = 0.0  # zombie: next straight-line walkability test
+        self.direct_ok = False
         self.last_seen: dict[int, tuple[float, np.ndarray]] = {}
         self.strafe = 0.0
         self.strafe_until = 0.0
@@ -732,6 +735,8 @@ class Bot:
                 self._plan(self._pick_goal())
             return IDLE
         now, dt = w.time, w.dt
+        if getattr(a, "role", "human") != "human":
+            return self._zombie_act(a, dt)
         vis = w.visibility()
 
         seen = []
@@ -782,6 +787,53 @@ class Bot:
             else:
                 self._navigate(a, act, dt)
                 self._maybe_grenade(a)
+        return act
+
+    def _zombie_act(self, a: Agent, dt: float) -> Action:
+        """Run at the nearest human and stab. The knife is the only weapon a zombie keeps."""
+        w = self.world
+        now = w.time
+        act = Action()
+        if a.slot != SLOT_MELEE:
+            act.switch = SLOT_MELEE
+        humans = [e for e in w.agents if e.alive and getattr(e, "role", "human") == "human"]
+        if not humans:
+            return act
+        e = min(humans, key=lambda o: float(np.linalg.norm(o.pos - a.pos)))
+        dist = float(np.linalg.norm(e.pos - a.pos))
+        yaw, pitch = angles_to(a.eye(), e.pos + np.array([0.0, 0.0, e.height * 0.5]))
+        dyaw, dpitch, ey, _ep = self._turn_towards(a, yaw, pitch, dt, self.gain)
+        act.look_yaw, act.look_pitch = dyaw, dpitch
+        if dist < 1.9 and abs(ey) < 30.0:
+            act.fire = not a.prev_fire
+            act.move_forward = 1.0 if dist > 1.1 else 0.0
+            return act
+        # open ground to the target: run straight at it, no path search
+        if dist < 14.0 and abs(float(e.pos[2] - a.pos[2])) < 0.5:
+            if now >= self.direct_check:
+                self.direct_check = now + 0.2
+                self.nav.refresh()
+                self.direct_ok = self.nav.grid._line_walkable(a.pos, e.pos, self.nav.ok_list)
+            if self.direct_ok:
+                d = e.pos - a.pos
+                yaw_saved = a.yaw
+                a.yaw = (a.yaw + dyaw) % 360.0
+                act.move_forward, act.move_right = self._move_axes(a, d)
+                a.yaw = yaw_saved
+                self.path = []
+                self.goal = None
+                return act
+        # re-route at most ~once a second, sooner when the target moved a lot relative to the
+        # distance; after a miss (target out of reach) roam for a while
+        moved = float(np.linalg.norm(self.goal - e.pos)) if self.goal is not None else 1e9
+        stale = self.goal is None or now >= self.replan_at or not self.path or (
+            moved > max(1.5, 0.25 * dist) and now - self.planned_at > 0.8)
+        if stale and now >= self.chase_retry:
+            self.task = "chase"
+            self._plan(e.pos)
+            if not self.path:
+                self.chase_retry = now + 1.5
+        self._navigate(a, act, dt)
         return act
 
     # ------------------------------------------------------------------ combat
