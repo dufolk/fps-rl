@@ -15,15 +15,36 @@ from gymnasium import spaces
 
 from .bots import Bot
 from .maps import MAPS
-from .obs import ObsBuilder
+from .obs import ObsBuilder, VectorDictObs, vector_dict_space
 from .sim import Action, MatchConfig, World
-from .weapons import NUM_SLOTS, PRIMARY_CHOICES, random_primary
+from .weapons import NUM_SLOTS, PRIMARY_CHOICES, SLOT_FRAG, SLOT_SMOKE, random_primary
 
 YAW_BINS = np.array([-30.0, -15.0, -6.0, -2.0, 0.0, 2.0, 6.0, 15.0, 30.0])
 PITCH_BINS = np.array([-10.0, -3.0, 0.0, 3.0, 10.0])
 MD_NVEC = [3, 3, len(YAW_BINS), len(PITCH_BINS), 2, 2, 2, 2, 2, NUM_SLOTS + 1, 3, 2, 2]
 ACTION_FIELDS = ["move_forward", "move_right", "look_yaw", "look_pitch", "fire", "alt",
                  "jump", "crouch", "reload", "switch", "lean", "use", "gadget"]
+
+# Eight directions around a center, then walk / run / stop.
+# The last yaw bin is 0 degrees. It does not steer toward an enemy or a throw point.
+_MOVE_DIR = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (-1.0, 1.0),
+             (-1.0, 0.0), (-1.0, -1.0), (0.0, -1.0), (1.0, -1.0))
+HEAD_YAW = np.array([-60.0, -45.0, -25.0, -15.0, -10.0, -6.0, -3.0, -1.0,
+                     0.0, 1.0, 3.0, 6.0, 10.0, 15.0, 25.0, 45.0, 60.0, 0.0])
+HEAD_PITCH = np.array([-10.0, -6.0, -3.0, -1.5, -0.5, 0.0, 0.5, 1.5, 3.0, 6.0, 10.0])
+HEADS = {
+    "move_direction": 9,
+    "move_way": 3,
+    "yaw": len(HEAD_YAW),
+    "pitch": len(HEAD_PITCH),
+    "body": 16,
+    "fight": 15,
+    "target_enemy": 6,
+    "throw_target": 9,
+    "predict_interval": 11,
+    "path_goal": 9,
+    "thrown_move_direction": 9,
+}
 
 
 @dataclass
@@ -68,9 +89,9 @@ class EnvConfig:
     teammate_bots: bool = True
     learner_primary: str = "ak47"
     bot_primaries: str = "mixed"  # "ak47" | "awm" | "mixed"
-    action_type: str = "multidiscrete"  # "multidiscrete" | "box"
+    action_type: str = "heads"  # "heads" | "multidiscrete" | "box"
     max_turn_per_step: float = 30.0  # degrees, only for action_type="box"
-    obs_mode: str = "vector"  # "vector" | "rgb" | "both"
+    obs_mode: str = "vector"  # "vector" (numeric dict) | "flat" (162-d) | "rgb" | "both"
     rgb_size: tuple = (128, 96)
     n_lidar: int = 32
     max_enemies: int = 4
@@ -96,8 +117,97 @@ class EnvConfig:
         return cls(**data)
 
 
-def decode_action(action, action_type: str, repeat: int, max_turn: float = 30.0) -> Action:
+def _head_space() -> spaces.Dict:
+    return spaces.Dict({name: spaces.Discrete(n) for name, n in HEADS.items()})
+
+
+def _move_axes(index: int) -> tuple[float, float]:
+    return _MOVE_DIR[int(index)]
+
+
+def _next_slot(agent) -> int:
+    owned = [slot for slot, ws in sorted(agent.inv.items())
+             if ws.mag > 0 or ws.spec.kind in ("gun", "melee")]
+    if not owned:
+        return 0
+    if agent.slot in owned:
+        return owned[(owned.index(agent.slot) + 1) % len(owned)]
+    return owned[0]
+
+
+def _arm_throw(act: Action, agent, now: float, slot: int, under: bool):
+    """Pull the pin once the grenade is in hand. A cook that is already going stays held."""
+    if agent is None:
+        act.switch = slot
+        return
+    if agent.throw_at >= 0:
+        act.fire = not under
+        act.alt = under
+        return
+    if agent.slot != slot:
+        act.switch = slot
+        return
+    if now < agent.ready_at:
+        return
+    if under:
+        act.alt = not agent.prev_alt
+    else:
+        act.fire = not agent.prev_fire
+
+
+def decode_heads(action, repeat: int, agent=None, now: float = 0.0) -> Action:
+    """Map one multi-head action onto a sim Action. Look deltas are per tick.
+
+    `throw_target`, `predict_interval` and `path_goal` have no simulator effect.
+    `target_enemy` is read by the observation, not here. The last yaw bin is 0 degrees.
+    """
+    way = int(action["move_way"])
+    cooking = agent is not None and agent.throw_at >= 0
+    direction = int(action["thrown_move_direction"] if cooking else action["move_direction"])
+    if way == 2:
+        forward, right, walk = 0.0, 0.0, False
+    else:
+        forward, right = _move_axes(direction)
+        walk = way == 0
+    act = Action(
+        move_forward=forward, move_right=right, walk=walk,
+        look_yaw=float(HEAD_YAW[int(action["yaw"])]) / repeat,
+        look_pitch=float(HEAD_PITCH[int(action["pitch"])]) / repeat,
+    )
+    body = int(action["body"])
+    if body == 2:
+        act.crouch = True
+    elif body == 4:
+        act.jump = True
+    elif body == 6:
+        act.lean = -1
+    elif body == 7:
+        act.lean = 1
+    fight = int(action["fight"])
+    if fight == 1:
+        act.fire = True
+    elif fight == 2:
+        act.alt = True
+    elif fight == 3:
+        act.reload = True
+    elif fight == 4 and agent is not None:
+        act.switch = _next_slot(agent)
+    elif fight == 8:
+        _arm_throw(act, agent, now, SLOT_FRAG, under=False)
+    elif fight == 9:
+        _arm_throw(act, agent, now, SLOT_SMOKE, under=False)
+    elif fight in (11, 13) and (agent is None or agent.throw_at < 0):
+        _arm_throw(act, agent, now, SLOT_FRAG, under=False)
+    elif fight in (12, 14) and (agent is None or agent.throw_at < 0):
+        _arm_throw(act, agent, now, SLOT_FRAG, under=True)
+    return act
+
+
+def decode_action(action, action_type: str, repeat: int, max_turn: float = 30.0,
+                  agent=None, now: float = 0.0) -> Action:
     """Map a policy action to a sim Action whose look deltas are per tick."""
+    if action_type == "heads":
+        return decode_heads(action, repeat, agent, now)
     a = np.asarray(action)
     if action_type == "multidiscrete":
         a = a.astype(np.int64)
@@ -107,6 +217,8 @@ def decode_action(action, action_type: str, repeat: int, max_turn: float = 30.0)
             fire=bool(a[4]), alt=bool(a[5]), jump=bool(a[6]), crouch=bool(a[7]),
             reload=bool(a[8]), switch=int(a[9]), lean=int(a[10]) - 1, use=bool(a[11]), gadget=bool(a[12]),
         )
+    if action_type != "box":
+        raise ValueError(action_type)
     a = np.clip(a.astype(np.float64), -1.0, 1.0)
     return Action(
         move_forward=float(a[0]), move_right=float(a[1]),
@@ -153,6 +265,7 @@ class _FPSBase:
             self.bots = [b for b in self.bots if self.world.agents[b.aid].team not in teams]
         self.obs_builder = ObsBuilder(self.world, cfg.n_lidar, max_enemies=cfg.max_enemies,
                                       max_allies=cfg.max_allies, enemy_mode=cfg.enemy_mode)
+        self.state_obs = VectorDictObs(self.world, enemy_mode=cfg.enemy_mode)
         self.render_mode = render_mode
         self._viewer = None
         self._rgb_viewer = None
@@ -160,14 +273,21 @@ class _FPSBase:
         self._last_dt = 0.0  # simulated seconds covered by the last env step
         self._last_frame = time.perf_counter()
 
-        vec = spaces.Box(-5.0, 5.0, (self.obs_builder.size,), np.float32)
-        if cfg.obs_mode == "vector":
-            self._obs_space = vec
-        else:
+        flat = spaces.Box(-5.0, 5.0, (self.obs_builder.size,), np.float32)
+        numeric = vector_dict_space()
+        if cfg.obs_mode == "flat":
+            self._obs_space = flat
+        elif cfg.obs_mode == "vector":
+            self._obs_space = numeric
+        elif cfg.obs_mode in ("rgb", "both"):
             w, h = cfg.rgb_size
             rgb = spaces.Box(0, 255, (h, w, 3), np.uint8)
-            self._obs_space = rgb if cfg.obs_mode == "rgb" else spaces.Dict({"vector": vec, "rgb": rgb})
-        if cfg.action_type == "multidiscrete":
+            self._obs_space = rgb if cfg.obs_mode == "rgb" else spaces.Dict({"vector": numeric, "rgb": rgb})
+        else:
+            raise ValueError(cfg.obs_mode)
+        if cfg.action_type == "heads":
+            self._act_space = _head_space()
+        elif cfg.action_type == "multidiscrete":
             self._act_space = spaces.MultiDiscrete(MD_NVEC)
         elif cfg.action_type == "box":
             self._act_space = spaces.Box(-1.0, 1.0, (len(MD_NVEC),), np.float32)
@@ -177,12 +297,18 @@ class _FPSBase:
     # ------------------------------------------------------------------ helpers
     def _observe(self, aid: int):
         mode = self.cfg.obs_mode
-        if mode == "vector":
+        if mode == "flat":
             return self.obs_builder.build(aid)
+        if mode == "vector":
+            return self.state_obs.build(aid)
         rgb = self._render_rgb(aid)
         if mode == "rgb":
             return rgb
-        return {"vector": self.obs_builder.build(aid), "rgb": rgb}
+        return {"vector": self.state_obs.build(aid), "rgb": rgb}
+
+    def _note_target(self, aid: int, action):
+        if self.cfg.action_type == "heads":
+            self.state_obs.note(aid, action["target_enemy"])
 
     def _render_rgb(self, aid: int) -> np.ndarray:
         if self._rgb_viewer is None:
@@ -290,6 +416,7 @@ class _FPSBase:
         if seed is None:
             seed = int(self.world.rng.integers(1 << 31))
         self.world.reset(seed)
+        self.state_obs.reset()
         for b in self.bots:
             b.reset(seed * 101 + b.aid)
         for b in self._buyers:
@@ -314,9 +441,9 @@ class _FPSBase:
 class FPSEnv(_FPSBase, gym.Env):
     """Single-agent environment: the learner plays with/against scripted bots.
 
-    Action (multidiscrete): [forward(3), strafe(3), yaw(9 bins), pitch(5 bins),
-    fire, alt(aim/heavy/underhand), jump, crouch, reload, switch(0=keep,1..7),
-    lean(left/none/right), use(plant/defuse/reinforce, hold), gadget(drone/camera view toggle)].
+    Default action is a dict of discrete heads (move, yaw/pitch bins, body, fight).
+    The last yaw bin is a fixed 0 degree turn. `target_enemy` only picks which
+    enemy is written into the observation.
     """
 
     def __init__(self, config: EnvConfig | dict | None = None, render_mode: str | None = None, **kwargs):
@@ -340,9 +467,11 @@ class FPSEnv(_FPSBase, gym.Env):
 
     def step(self, action):
         cfg = self.cfg
-        act = decode_action(action, cfg.action_type, cfg.action_repeat, cfg.max_turn_per_step)
-        events = []
         me = self.world.agents[self.learner]
+        self._note_target(self.learner, action)
+        act = decode_action(action, cfg.action_type, cfg.action_repeat, cfg.max_turn_per_step,
+                            agent=me, now=self.world.time)
+        events = []
         t0 = self.world.time
         for k in range(cfg.action_repeat):
             events += self._tick({self.learner: act})
@@ -393,9 +522,12 @@ class FPSMultiAgentEnv(_FPSBase):
 
     def step(self, actions: dict):
         cfg = self.cfg
-        decoded = {self._name_to_id[n]: decode_action(a, cfg.action_type, cfg.action_repeat,
-                                                      cfg.max_turn_per_step)
-                   for n, a in actions.items()}
+        decoded = {}
+        for n, a in actions.items():
+            aid = self._name_to_id[n]
+            self._note_target(aid, a)
+            decoded[aid] = decode_action(a, cfg.action_type, cfg.action_repeat, cfg.max_turn_per_step,
+                                         agent=self.world.agents[aid], now=self.world.time)
         events = []
         t0 = self.world.time
         for k in range(cfg.action_repeat):

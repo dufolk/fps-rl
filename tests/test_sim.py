@@ -175,15 +175,93 @@ def test_env_api():
     env = FPSEnv(team_size=2, seed=0)
     check_env(env, skip_render_check=True)
     obs, _ = env.reset(seed=0)
-    assert obs.shape == env.observation_space.shape
-    for _ in range(50):
+    assert set(obs) == set(env.observation_space.spaces)
+    assert obs["ownplayer.state.numeric"].shape == (110,)
+    assert obs["environment.lidar_info.numeric"].shape == (93,)
+    assert obs["nearby.thrown.numeric"].shape == (10, 8)
+    assert obs["environment.camera.numeric"].shape == (8,)
+    for _ in range(20):
         obs, r, term, trunc, info = env.step(env.action_space.sample())
         assert env.observation_space.contains(obs) and np.isfinite(r)
     env.close()
 
-    box = FPSEnv(EnvConfig(team_size=1, action_type="box"))
+    flat = FPSEnv(EnvConfig(team_size=1, obs_mode="flat", action_type="multidiscrete"))
+    obs, _ = flat.reset(seed=0)
+    assert obs.shape == flat.observation_space.shape == (flat.obs_builder.size,)
+    flat.step(flat.action_space.sample())
+    flat.close()
+
+    box = FPSEnv(EnvConfig(team_size=1, action_type="box", obs_mode="flat"))
     box.reset(seed=1)
     box.step(box.action_space.sample())
+    box.close()
+
+
+def test_first_person_rgb_is_still_available():
+    rgb = FPSEnv(team_size=1, obs_mode="rgb", rgb_size=(32, 24))
+    assert rgb.observation_space.shape == (24, 32, 3)
+    rgb.close()
+
+    both = FPSEnv(team_size=1, obs_mode="both", rgb_size=(32, 24), action_repeat=1)
+    obs, _ = both.reset(seed=0)
+    assert both.observation_space.contains(obs)
+    assert obs["vector"]["ownplayer.state.numeric"].shape == (110,)
+    assert obs["rgb"].shape == (24, 32, 3) and obs["rgb"].dtype == np.uint8
+    assert int(obs["rgb"].max()) > 0
+    both.close()
+
+
+def test_look_bins_do_not_lock_onto_an_enemy():
+    from fpsrl.envs import HEADS, decode_heads
+    from fpsrl.sim import dir_from_angles, wrap180
+    idle = {name: 0 for name in HEADS}
+    held = decode_heads({**idle, "yaw": 17, "pitch": 5}, repeat=1)
+    assert held.look_yaw == 0.0 and held.look_pitch == 0.0
+
+    env = FPSEnv(team_size=2, action_repeat=1, teammate_bots=False, seed=1)
+    env.reset(seed=1)
+    w = env.world
+    me = w.agents[env.learner]
+    foes = [a for a in w.agents if a.team != me.team]
+    fwd = dir_from_angles(me.yaw, 0.0)
+    right = dir_from_angles(me.yaw + 90.0, 0.0)
+    placed = []
+    for dist in (2.5, 3.5, 5.0, 7.0):
+        for side in (1.6, -1.8, 2.2, -2.4):
+            pos = me.pos + fwd * dist + right * side
+            pos = np.array(pos, dtype=np.float64)
+            pos[2] = me.pos[2]
+            aim = pos + np.array([0.0, 0.0, 1.2])
+            if w.segment_clear(me.eye(), aim):
+                placed.append(pos)
+            if len(placed) == 2:
+                break
+        if len(placed) == 2:
+            break
+    assert len(placed) == 2, "no open ground in front of the spawn"
+    for foe, pos in zip(foes, placed):
+        foe.pos[:] = pos
+        foe.prev_pos[:] = pos
+        foe.alive = True
+        foe.hp = 100.0
+    me.pitch = 0.0
+    w._vis_tick = -1
+    env.state_obs.build(env.learner)
+    assert len(env.state_obs.slots[env.learner]) >= 2
+    action = dict(idle)
+    action["yaw"] = 13
+    action["pitch"] = 8
+    action["target_enemy"] = 0
+    y0, p0 = float(me.yaw), float(me.pitch)
+    nearer = min(foes, key=lambda a: float(np.linalg.norm(a.pos - me.pos)))
+    yaw_to, _ = angles_to(me.eye(), nearer.pos + np.array([0.0, 0.0, nearer.height * 0.62]))
+    assert abs(wrap180(yaw_to - y0) - 15.0) > 5.0
+    obs, r, term, trunc, info = env.step(action)
+    assert abs(wrap180(me.yaw - y0) - 15.0) < 1e-3
+    assert abs(me.pitch - p0 - 3.0) < 1e-3
+    assert env.state_obs.targets[env.learner] is not None
+    assert np.allclose(obs["target_enemy.state.numeric"][:2], obs["enemy_0.state.numeric"][:2])
+    env.close()
 
 
 def test_multiagent_api():

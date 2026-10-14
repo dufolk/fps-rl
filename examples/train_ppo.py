@@ -1,9 +1,11 @@
-"""PPO baseline with stable-baselines3 (pip install stable-baselines3).
+"""PPO with the structured multi-head policy (pip install stable-baselines3).
 
     py examples/train_ppo.py --timesteps 2000000 --envs 8
     py examples/train_ppo.py --map hp_town --mode dom --team-size 3
     py examples/train_ppo.py --eval runs/ppo/final.zip     # watch a trained policy
 
+The policy encodes self, enemies, teammates, thrown items and lidar in separate
+towers, then a 512-wide trunk. Each discrete head has its own categorical.
 A 1v1 vs "easy" bots curriculum is a reasonable starting point; raise
 --team-size / --difficulty once the agent learns to aim.
 """
@@ -19,11 +21,12 @@ import fpsrl  # noqa: E402
 def make_env(rank, args, render_mode=None):
     def _init():
         from stable_baselines3.common.monitor import Monitor
+        from fpsrl.policy import HeadAction
         env = fpsrl.FPSEnv(map_name=args.map, mode=args.mode, team_size=args.team_size,
                            bot_difficulty=args.difficulty,
                            max_episode_steps=args.episode_steps, kill_limit=args.kill_limit,
                            render_mode=render_mode, seed=args.seed + rank)
-        return Monitor(env)
+        return Monitor(HeadAction(env))
     return _init
 
 
@@ -46,6 +49,8 @@ def main():
     from stable_baselines3.common.callbacks import CheckpointCallback
     from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
+    from fpsrl.policy import MultiHeadPolicy
+
     if args.eval:
         env = make_env(0, args, render_mode="human")()
         model = PPO.load(args.eval)
@@ -65,10 +70,9 @@ def main():
 
     vec = SubprocVecEnv([make_env(i, args) for i in range(args.envs)])
     vec = VecMonitor(vec)
-    model = PPO("MlpPolicy", vec, n_steps=512, batch_size=1024, n_epochs=4, gamma=0.995,
+    model = PPO(MultiHeadPolicy, vec, n_steps=512, batch_size=1024, n_epochs=4, gamma=0.995,
                 gae_lambda=0.95, learning_rate=3e-4, ent_coef=0.01, clip_range=0.2,
-                policy_kwargs=dict(net_arch=[256, 256]), tensorboard_log=tb_log, verbose=1,
-                seed=args.seed)
+                tensorboard_log=tb_log, verbose=1, seed=args.seed)
     ckpt = CheckpointCallback(save_freq=max(1, 200_000 // args.envs), save_path=args.out, name_prefix="ppo")
     model.learn(total_timesteps=args.timesteps, callback=ckpt)
     model.save(os.path.join(args.out, "final"))

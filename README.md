@@ -127,33 +127,41 @@ obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
 
 学习者是 `learner_team` 队的 0 号位，其余所有位置由规则 bot 填充（`teammate_bots=False` 时队友不行动）。bot 会执行模式目标：占点、带包 / 安包 / 拆包、彩六加固和守点，爆破模式按经济自动购买。`info["score"]` 是当前比分（击杀数 / 占点分 / 回合胜场）。
 
-**动作**（`action_type="multidiscrete"`，默认）：`MultiDiscrete([3,3,9,5,2,2,2,2,2,10,3,2,2])`
+**动作**（`action_type="heads"`，默认）：`Dict`，每个头是一个 `Discrete`。视角只由 yaw / pitch 档位决定，不会锁到敌人或投掷点上。yaw 的最后一档是 0 度。
 
-| 维度 | 含义 |
-|---|---|
-| 0, 1 | 前后 / 左右（0=负，1=停，2=正） |
-| 2 | 水平转向（度/步）`[-30,-15,-6,-2,0,2,6,15,30]`，正 = 左转 |
-| 3 | 俯仰（度/步）`[-10,-3,0,3,10]`，正 = 抬头 |
-| 4-8 | 开火、副键（瞄准/重刀/低抛）、跳、蹲、换弹 |
-| 9 | 切枪：0 不变，1-9 对应槽位（主武器、手枪、刀、手雷、烟雾、装备、C4/拆解器、闪光弹、燃烧弹） |
-| 10 | 探头：0 左，1 不探，2 右 |
-| 11 | 交互（按住：安包 / 拆包 / 加固 / 路障） |
-| 12 | 切换无人机 / 摄像头视角（彩六） |
-
-`action_type="box"`：`Box(-1,1,(13,))`，同样的语义，转向连续（`max_turn_per_step` 度）。每个 env step 执行 `action_repeat`（默认 4）个 60 Hz tick，转向均摊到每个 tick。爆破模式下 `learner_auto_buy=True`（默认）让学习者在冻结时间按 bot 的策略自动购买。
-
-**观测**（`obs_mode="vector"`，默认 162 维，`[-5,5]` 归一化），索引区间可用 `env.obs_builder.layout()` 获取：
-
-| 区块 | 维度 | 内容 |
+| 头 | 档数 | 含义 |
 |---|---|---|
-| self | 55 | 存活、HP、位置（按地图范围归一化）、局部速度、朝向、当前槽位 / 持有槽位、弹药、换弹 / 开镜 / 就绪、雷 / 烟 / 闪 / 燃烧数量、后坐力、扩散、受击方向、剩余时间、比分差、探头、交互进度、冻结、护甲、金钱、视角模式 |
-| lidar | 32 | 水平 360° 射线到障碍物的距离 |
-| enemies | 4×9 | 可见敌人（按距离）：相对位置、距离、到瞄准点的 yaw/pitch 误差 |
-| allies | 3×5 | 队友相对位置、HP |
-| projectiles | 2×6 | 最近的投掷物 |
-| objective | 12 | 模式相关：占点为每个点的状态（激活 / 已结束 / 未开启）、比分领先（激活点为分差 / 100，已结束点为得失）、距离、方位；爆破 / 彩六为攻守方、回合阶段、剩余时间、炸弹状态 / 距离 / 方位、最近点位距离 / 方位、是否携带 |
+| `move_direction` | 9 | 八方向加中心。对角线由模拟器归一成同样的步速 |
+| `move_way` | 3 | 0 走，1 跑，2 停 |
+| `yaw` | 18 | 度/步 `[-60,-45,-25,-15,-10,-6,-3,-1,0,1,3,6,10,15,25,45,60,0]`，正 = 左转。最后一档固定为 0，不追踪目标 |
+| `pitch` | 11 | 度/步 `[-10,-6,-3,-1.5,-0.5,0,0.5,1.5,3,6,10]`，正 = 抬头 |
+| `body` | 16 | 1 站，2 蹲，4 跳，6 左探，7 右探，8 取消探头。趴、翻墙、开关门、滑铲和三个预留档没有对应输入 |
+| `fight` | 15 | 同一决策里互斥：1 开火，2 开镜，3 换弹，4 切到下一把武器，6 取消开镜，8 掏手雷并捏雷，9 掏烟雾并捏雷，11/13 高抛，12/14 低抛（副键）。使用消耗品、切换射击模式、取消投掷没有对应输入 |
+| `target_enemy` | 6 | 0–3 选上一帧按距离排序的可见敌人，写入 `target_enemy.*`；4 保持上一目标；5 清空。不改变视角 |
+| `thrown_move_direction` | 9 | 正在捏雷时替代本步的 `move_direction`，方向表相同 |
+| `throw_target` | 9 | 保留在动作里，本环境不使用 |
+| `predict_interval` | 11 | 保留在动作里，本环境不使用 |
+| `path_goal` | 9 | 保留在动作里，本环境不使用 |
 
-`enemy_mode="all"` 提供全部敌人信息（特权观测，适合调试或 teacher 策略）。`obs_mode="rgb"` 返回第一人称离屏渲染 `(H,W,3) uint8`（`rgb_size=(128,96)`），`"both"` 返回 `{"vector", "rgb"}`。
+每个 env step 执行 `action_repeat`（默认 4）个 60 Hz tick，转向均摊到每个 tick。爆破模式下 `learner_auto_buy=True`（默认）让学习者在冻结时间按 bot 的策略自动购买。
+
+`action_type="multidiscrete"` 仍是原来的 `MultiDiscrete([3,3,9,5,2,2,2,2,2,10,3,2,2])`：前后 / 左右、9 档 yaw、5 档 pitch、开火、副键、跳、蹲、换弹、切枪（0 不变，1–9 为槽位）、探头、交互、无人机。`action_type="box"` 是 `Box(-1,1,(13,))`，同样的语义，转向连续（`max_turn_per_step` 度）。
+
+**观测**（`obs_mode="vector"`，默认）是 `Dict`，数值裁到 `[-5, 5]`。只包含模拟器算得出来的块。倒地血、能量、氧气、草丛、毒圈相对坐标，以及武器 stats 里没有对应量的槽，保持 0。
+
+| 键 | 形状 | 有值的部分 |
+|---|---|---|
+| `ownplayer.state.numeric`、`enemy_0`…`enemy_3`、`target_enemy`、`teammate_0`…`teammate_3` | 110 | 位置、朝向、速度、HP、相对位置和角度、身体姿态（站 / 蹲 / 跳）、存活、自己的当前武器槽和射击模式。敌人默认只有视线内的，按距离放进前 4 个槽 |
+| 同上前缀的 `weapon.numeric` | 8 | 自己和队友：弹匣比例、换弹剩余、是否在换弹。敌人的这 8 维是 0 |
+| 同上前缀的 `weapon.stats` | 36 | 伤害、弹匣容量、射击间隔、单发 / 全自动、衰减、射程、散布、换弹时间。其余槽为 0 |
+| `ownplayer.numeric.reservepara` | 10 | 是否在捏雷、引信剩余、最近投掷物的相对位置 |
+| `environment.lidar_info.numeric` | 93 | 脚前 6 条、背后 6 条、眼前 11×7 扇形，再加这组扇形中心行和中心列的最小 / 最大距离。打不到的射线用满量程 |
+| `environment.camera.numeric` | 8 | 眼睛位置、yaw、pitch。没有安全区中心，对应的两维是 0 |
+| `nearby.thrown.numeric` | (10, 8) | 飞行中的投掷物，以及还没散尽的烟和火：相对位置、剩余时间、半径 |
+
+`obs_mode="flat"` 保留原来的 162 维向量，索引区间用 `env.obs_builder.layout()`：self 55、lidar 32、敌人 4×9、队友 3×5、投掷物 2×6、目标 12。`enemy_mode="all"` 在两种观测里都改成看到全部敌人。
+
+第一人称 RGB 仍然可以拿。它不是上面这套数值输入：`obs_mode="rgb"` 只返回离屏画面 `(H, W, 3) uint8`（默认 `rgb_size=(128, 96)`），`obs_mode="both"` 返回 `{"vector": 上面的 Dict, "rgb": 画面}`。`examples/random_agent.py --obs rgb` 走的就是这条路径。
 
 **奖励**由 `RewardConfig` 配置：击杀 +1、爆头额外 +0.25、死亡 −0.5、每 100 伤害 +0.5、每 100 承伤 −0.25、胜 +3 / 负 −3；模式奖励：回合胜 +1 / 负 −1、己方占点 +0.5（不在点内 ×0.3）、丢点 −0.25、安包 +0.8、拆包 +0.8，另有 `hold`（激活点只有己方在场时每秒）和 `in_objective`（每秒在目标区域内）两个默认为 0 的塑形项。`info["events"]` 包含本步所有原始事件（`shot`、`damage`、`kill`、`point_captured`、`bomb_planted`、`round_end`、`wall_break` 等），可以自定义奖励：
 
@@ -210,7 +218,7 @@ print(w.score, w.mode.state())    # 比分、回合阶段、炸弹状态……
 
 ```bash
 py examples/random_agent.py [--render] [--obs rgb] [--map desert2 --mode bomb]   # 随机策略 + 吞吐测试
-py examples/train_ppo.py --envs 8 [--map hp_town --mode dom]   # stable-baselines3 PPO 基线
+py examples/train_ppo.py --envs 8 [--map hp_town --mode dom]   # PPO：分塔编码，512 维主干，每个动作头一个类别分布
 py examples/train_ppo.py --eval runs/ppo/final.zip             # 观看训练好的策略
 py examples/multiagent_selfplay.py --render                    # 多智能体骨架
 py tests/test_sim.py                                           # 或 pytest tests
