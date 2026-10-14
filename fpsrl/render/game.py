@@ -19,7 +19,7 @@ from panda3d.core import Filename, KeyboardButton, MouseButton, WindowProperties
 
 from ..bots import Bot
 from ..maps import MAPS, resolve_map_mode
-from ..profile import SENSITIVITY_STEP, clamp_sensitivity
+from ..profile import SENSITIVITY_STEP, clamp_sensitivity, graphics_opts
 from ..net.protocol import (B_ALT, B_FIRE, B_RELOAD, apply_agent, apply_client_cmd, apply_world, encode_input,
                             input_to_action, world_state)
 from ..sim import IDLE, TEAM_NAMES, Action, MatchConfig, World
@@ -627,6 +627,8 @@ class LocalSession:
         human = None if self.autoplay or self.spectate else self.ctrl.read_input()
         self.acc += dt
         steps = 0
+        # Prefer a smooth frame over catching up every missed sim tick (bank / siege can be heavy).
+        budget = time.perf_counter() + 0.010
         while self.acc >= w.dt and steps < 6:
             acts = {aid: b.act() for aid, b in self.bots.items()}
             if human is not None:
@@ -641,6 +643,8 @@ class LocalSession:
             if human is not None:
                 human.switch = 0
                 self.ctrl.after_tick()
+            if steps >= 2 and time.perf_counter() >= budget:
+                break
         if steps == 6:
             self.acc = 0.0
         if w.done:
@@ -843,6 +847,7 @@ class ClientSession:
         act = self.ctrl.read_input()
         self.acc += dt
         steps = 0
+        budget = time.perf_counter() + 0.010
         while self.acc >= w.dt and steps < 6:
             if self.bot is not None:
                 act = self.bot.act()
@@ -867,6 +872,8 @@ class ClientSession:
             self.ctrl.after_tick()
             self.acc -= w.dt
             steps += 1
+            if steps >= 2 and time.perf_counter() >= budget:
+                break
         if steps == 6:
             self.acc = 0.0
         self._interpolate()
@@ -883,14 +890,23 @@ class GameApp:
     """Stand-alone match without the main menu."""
 
     def __init__(self, team_size=4, difficulty="normal", primary="ak47", kill_limit=60, time_limit=420.0,
-                 size=(1600, 900), fullscreen=False, vsync=True, shadows=True, msaa=4, sensitivity=1.6,
+                 size=(1600, 900), fullscreen=False, vsync=True, shadows=None, msaa=None, sensitivity=1.6,
                  autoplay=False, seed=None, screenshot=None, shot_time=6.0, team=0, settings=None,
-                 host=None, map_name="transport_ship", mode=None, mode_params=None, spectate=False):
+                 host=None, map_name="transport_ship", mode=None, mode_params=None, spectate=False,
+                 graphics="medium", shadow_size=None):
         self.settings = settings or _Settings(sensitivity=sensitivity)
         map_name, mode = resolve_map_mode(map_name, mode)
+        opts = graphics_opts(graphics)
+        if shadows is not None:
+            opts["shadows"] = bool(shadows)
+        if msaa is not None:
+            opts["msaa"] = int(msaa)
+        if shadow_size is not None:
+            opts["shadow_size"] = int(shadow_size)
         world = World(MatchConfig(team_size=team_size, map_name=map_name, mode=mode))
-        self.viewer = Viewer(world, pov=0, onscreen=True, size=size, shadows=shadows, vsync=vsync, msaa=msaa,
-                             fullscreen=fullscreen, title=f"FPS-RL  |  {MAPS[map_name][1]}")
+        self.viewer = Viewer(world, pov=0, onscreen=True, size=size, shadows=opts["shadows"], vsync=vsync,
+                             msaa=opts["msaa"], shadow_size=opts["shadow_size"], fullscreen=fullscreen,
+                             title=f"FPS-RL  |  {MAPS[map_name][1]}")
         self.base = self.viewer.base
         self.base.ignore("c")
         self.base.ignore("v")

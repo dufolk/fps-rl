@@ -1,8 +1,10 @@
 """Top-level application: main menu <-> game sessions (single player, LAN host, LAN client)."""
 from __future__ import annotations
 
+import time
+
 from ..bots import Bot
-from ..profile import Profile
+from ..profile import Profile, graphics_opts
 from ..sim import MatchConfig, World
 from .game import ClientSession, LocalSession
 from .ime import hold as hold_ime, place_window, top_hwnd
@@ -11,17 +13,24 @@ from .viewer import Viewer
 
 
 class App:
-    def __init__(self, size=(1600, 900), fullscreen=None, vsync=True, shadows=True, msaa=4):
+    def __init__(self, size=(1600, 900), fullscreen=None, vsync=True, shadows=None, msaa=None):
         self.profile = Profile.load()
         if fullscreen is not None:
             self.profile.borderless = fullscreen
         self.size = size
+        opts = graphics_opts(self.profile.graphics)
+        if shadows is not None:
+            opts["shadows"] = bool(shadows)
+        if msaa is not None:
+            opts["msaa"] = int(msaa)
+        self.gfx = opts
         # a bot match keeps running behind the menu
         self.menu_world = World(MatchConfig(team_size=4, kill_limit=0, time_limit=0, seed=3,
                                             primaries=["ak47", "awm", "ak47", "ak47"] * 2))
         self.menu_bots = [Bot(self.menu_world, a.id, "hard", seed=a.id) for a in self.menu_world.agents]
-        self.viewer = Viewer(self.menu_world, pov=0, onscreen=True, size=size, shadows=shadows, vsync=vsync,
-                             msaa=msaa, fullscreen=False, title="FPS-RL | 运输船")
+        self.viewer = Viewer(self.menu_world, pov=0, onscreen=True, size=size, shadows=opts["shadows"],
+                             vsync=vsync, msaa=opts["msaa"], shadow_size=opts["shadow_size"],
+                             fullscreen=False, title="FPS-RL | 运输船")
         self.base = base = self.viewer.base
         base.ignore("c")
         base.ignore("v")
@@ -48,6 +57,13 @@ class App:
 
     def apply_borderless(self):
         set_borderless(self.base, self.profile.borderless, self.size)
+
+    def apply_graphics(self):
+        """Remember the preset for the next match / map load. MSAA also needs an app restart."""
+        opts = graphics_opts(self.profile.graphics)
+        self.gfx = opts
+        self.viewer.shadows = opts["shadows"]
+        self.viewer.shadow_size = opts["shadow_size"]
 
     def _on_reshape(self, win):
         if win != self.base.win or not self.profile.borderless:
@@ -155,10 +171,13 @@ class App:
             w = self.menu_world
             self.acc += dt
             steps = 0
+            budget = time.perf_counter() + 0.008
             while self.acc >= w.dt and steps < 3:
                 w.step({b.aid: b.act() for b in self.menu_bots})
                 self.acc -= w.dt
                 steps += 1
+                if steps >= 2 and time.perf_counter() >= budget:
+                    break
             if steps == 3:
                 self.acc = 0.0
             self.viewer.sync(dt, self.acc / w.dt)

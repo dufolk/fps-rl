@@ -247,13 +247,13 @@ class Effects:
         self.base = base
         root = base.render.attachNewNode("effects")
         self.root = root
-        self.sparks = ParticleSystem(root, textures.sprite("spark"), True, 260, "sparks")
-        self.fire = ParticleSystem(root, textures.sprite("smoke"), True, 90, "fire")
-        self.flames = ParticleSystem(root, textures.sprite("smoke"), True, 160, "flames")
-        self.flash = ParticleSystem(root, textures.sprite("flash"), True, 24, "flash")
-        self.dust = ParticleSystem(root, textures.sprite("smoke"), False, 200, "dust")
-        self.smoke = ParticleSystem(root, textures.sprite("smoke"), False, 260, "smoke")
-        self.blood = ParticleSystem(root, textures.sprite("blood"), False, 80, "blood")
+        self.sparks = ParticleSystem(root, textures.sprite("spark"), True, 160, "sparks")
+        self.fire = ParticleSystem(root, textures.sprite("smoke"), True, 64, "fire")
+        self.flames = ParticleSystem(root, textures.sprite("smoke"), True, 96, "flames")
+        self.flash = ParticleSystem(root, textures.sprite("flash"), True, 20, "flash")
+        self.dust = ParticleSystem(root, textures.sprite("smoke"), False, 120, "dust")
+        self.smoke = ParticleSystem(root, textures.sprite("smoke"), False, 140, "smoke")
+        self.blood = ParticleSystem(root, textures.sprite("blood"), False, 48, "blood")
         self.tracers = TracerSystem(root, textures.sprite("tracer"))
         self.holes = DecalSystem(root, textures.sprite("hole"), 200, 0.085, "holes")
         self.scorches = DecalSystem(root, textures.sprite("scorch"), 12, 3.2, "scorch")
@@ -398,7 +398,7 @@ class Effects:
                 del self.smoke_clouds[sid]
         for sid, c in list(self.fire_zones.items()):
             c["t"] += dt
-            for _ in range(4):
+            for _ in range(2):
                 self._flame(c["pos"], c["radius"], burst=False)
             if random.random() < 0.45:
                 r = c["radius"] * 0.35

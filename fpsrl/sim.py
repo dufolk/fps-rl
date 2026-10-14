@@ -1125,14 +1125,17 @@ class World:
         return result
 
     def segment_clear(self, p, q, smoke=False) -> bool:
+        """True if the segment hits no bullet-blocking box (and optionally no smoke).
+
+        Uses the size-sorted LOS box list with chunked early-out, same path as `visibility`,
+        instead of a full R×N raycast every call.
+        """
         p = np.asarray(p, dtype=np.float64)
         q = np.asarray(q, dtype=np.float64)
-        d = q - p
-        dist = float(np.linalg.norm(d))
-        if dist < 1e-6:
+        if float(np.linalg.norm(q - p)) < 1e-6:
             return True
-        t, _, _ = raycast_boxes(p[None], (d / dist)[None], dist, self.bmin, self.bmax)
-        if t[0] < dist - 1e-3:
+        if len(self.los_min) and segments_blocked(p[None], q[None], self.los_min, self.los_max,
+                                                   chunk=256)[0]:
             return False
         if smoke and self.smokes:
             return not self._smoke_blocks(p[None], q[None])[0]

@@ -56,7 +56,7 @@ def _darker(c, k):
 
 class WorldScene:
     def __init__(self, base, game_map: MapData, textures: TextureLibrary, shadows: bool = True,
-                 shadow_size: int = 4096):
+                 shadow_size: int = 2048):
         self.base = base
         self.map = game_map
         self.tex = textures
@@ -68,6 +68,10 @@ class WorldScene:
         (x0, y0), (x1, y1) = game_map.bounds
         self.center = Vec3((x0 + x1) / 2, (y0 + y1) / 2, 0)
         self.extent = max(x1 - x0, y1 - y0)
+        # Dense voxel maps (hp_town) fill the shadow buffer with too many triangles; keep res modest.
+        vis = sum(1 for b in game_map.boxes if b.visible and not b.params.get("destruct"))
+        if shadows and vis > 2000:
+            shadow_size = min(int(shadow_size), 1024)
         self._build_lights(shadows, shadow_size)
         self._build_sky()
         ship = game_map.theme == "ship"
@@ -235,6 +239,7 @@ class WorldScene:
             node.setTexture(self.ts_normal, nrm, 1)
             surface = "paint" if mat.startswith("container_") else SURFACE_FOR.get(mat, "paint")
             node.setMaterial(M.make_material(surface), 1)
+            node.flattenStrong()
 
     def _build_container_details(self):
         mb = MeshBuilder("container_detail")
@@ -357,6 +362,8 @@ class WorldScene:
         node.setTexture(col, 1)
         node.setTexture(self.ts_normal, nrm, 1)
         node.setMaterial(M.make_material("cloth"), 1)
+        # Far plane is huge; drawing it into the shadow map just burns fill rate.
+        node.hide(SHADOW_MASK)
 
     def _build_distant_land(self):
         theme = self.map.theme

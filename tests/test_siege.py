@@ -314,8 +314,15 @@ def test_defenders_set_up_then_hold():
         w.step({b.aid: b.act() for b in bots})
     dfn = next(a for a in w.agents if m.side(a.team) == DEF and a.alive)
     d = np.array([np.cos(np.radians(dfn.yaw)), np.sin(np.radians(dfn.yaw)), 0.0])
-    pos = next(dfn.eye() + d * dist for dist in (2.0, 3.0, 1.2, 5.0)
-               if w.segment_clear(dfn.eye(), dfn.eye() + d * dist))
+    eye = dfn.eye()
+    pos = None
+    for dist in (2.0, 3.0, 1.2, 5.0, 0.6):
+        cand = eye + d * dist
+        if w.segment_clear(eye, cand):
+            pos = cand
+            break
+    if pos is None:
+        pos = eye + np.array([0.0, 0.0, 0.35])  # above the helmet if every forward ray hits a wall
     drone = w.gadgets._add("drone", 0, m.team_of_side(ATT), pos, yaw=0.0, pitch=0.0, vz=0.0)
     for _ in range(int(2.5 / w.dt)):
         w.step({b.aid: b.act() for b in bots})
