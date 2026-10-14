@@ -324,6 +324,22 @@ def test_defenders_set_up_then_hold():
     assert drone["id"] not in w.gadgets.items
 
 
+def test_tied_sightings_do_not_crash_the_rotate():
+    w = World(MatchConfig(team_size=1, map_name="bank", mode="r6", seed=3, mode_params={"prep_time": 0.0}))
+    w.reset(3)
+    m = w.mode
+    m.phase = "live"
+    dfn = next(a for a in w.agents if m.side(a.team) == DEF)
+    _place(w, dfn, (0.0, 0.0, 0.0))
+    bot = Bot(w, dfn.id, "hard", seed=1)
+    bot.last_seen[8] = (w.time, np.array([20.0, 0.0, 0.0]))
+    bot.last_seen[9] = (w.time, np.array([0.0, 20.0, 0.0]))
+    goal, task, _bias = bot._round_objective(m, dfn)
+    assert task == "rotate"
+    assert goal is not None
+    assert float(np.hypot(goal[0], goal[1])) > 5.0
+
+
 def test_siege_bots_play_a_round():
     w, m = _siege(prep_time=8.0, round_time=60.0)
     bots = [Bot(w, a.id, "hard", seed=a.id) for a in w.agents]

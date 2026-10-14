@@ -274,7 +274,7 @@ class Bot:
         if m.name == "r6" and m.phase == "live":
             fresh = [(t, p) for t, p in self.last_seen.values() if self.world.time - t < 6.0]
             if fresh:
-                p = max(fresh)[1]
+                p = max(fresh, key=lambda x: x[0])[1]
                 if math.hypot(p[0] - a.pos[0], p[1] - a.pos[1]) > 5.0:
                     return p.copy(), "rotate", 0.85
             stand, look = self._anchor(m, a, site)
