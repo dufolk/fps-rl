@@ -11,9 +11,20 @@ SENSITIVITY_MIN = 0.1
 SENSITIVITY_MAX = 12.0
 SENSITIVITY_STEP = 0.1
 
+# Default was effectively "ultra" (4096 shadow map + MSAA 4), which tanks FPS on dense maps.
+GRAPHICS_PRESETS = {
+    "low": {"shadows": False, "shadow_size": 1024, "msaa": 0},
+    "medium": {"shadows": True, "shadow_size": 1024, "msaa": 2},
+    "high": {"shadows": True, "shadow_size": 2048, "msaa": 4},
+}
+
 
 def clamp_sensitivity(value) -> float:
     return max(SENSITIVITY_MIN, min(SENSITIVITY_MAX, round(float(value), 2)))
+
+
+def graphics_opts(name: str = "medium") -> dict:
+    return dict(GRAPHICS_PRESETS.get(name, GRAPHICS_PRESETS["medium"]))
 
 
 def _default_name():
@@ -31,6 +42,7 @@ class Profile:
     volume: float = 0.8
     show_fps: bool = False
     borderless: bool = False
+    graphics: str = "medium"  # low | medium | high
     primary: str = "ak47"
     skins: dict = field(default_factory=dict)  # weapon -> skin key
     single: dict = field(default_factory=lambda: {"map": "transport_ship", "mode": "tdm", "team_size": 4,
@@ -70,6 +82,8 @@ class Profile:
             elif isinstance(cur, str) and isinstance(v, str):
                 setattr(p, k, v)
         p.sensitivity = clamp_sensitivity(p.sensitivity)
+        if p.graphics not in GRAPHICS_PRESETS:
+            p.graphics = "medium"
         return p
 
     def save(self, path: str = PROFILE_PATH):

@@ -623,6 +623,16 @@ class MainMenu:
         Cycle(ui, page, L("无边框全屏", "Borderless fullscreen"),
               [(False, L("关", "Off")), (True, L("开", "On"))],
               prof.borderless, -0.21, flag("borderless"))
+
+        def set_gfx(v):
+            prof.graphics = v
+            prof.save()
+            self.app.apply_graphics()
+        Cycle(ui, page, L("画质", "Graphics"),
+              [("low", L("低", "Low")), ("medium", L("中", "Medium")), ("high", L("高", "High"))],
+              prof.graphics, -0.33, set_gfx)
+        ui.label(page, L("画质变更在下一局生效；阴影最吃帧率", "Graphics apply next match; shadows cost the most FPS"),
+                 (-1.0, -0.54), 0.032, DIM)
         ui.label(page, L("设置自动保存到 ~/.fpsrl/profile.json", "Settings are saved to ~/.fpsrl/profile.json"),
                  (-1.0, -0.66), 0.032, DIM)
         name["focus"] = 1
