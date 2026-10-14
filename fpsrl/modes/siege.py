@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..geometry import segments_blocked
 from ..operators import ATTACKERS, DEFENDERS, OPERATORS
 from ..weapons import SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS
 from .rounds import ATT, DEF, RoundMode
@@ -111,24 +112,47 @@ class Siege(RoundMode):
 
     def _reveal_sites(self):
         """Attackers learn a site by driving a drone into line of sight. Their own eyes count only
-        once the round is live, so the prep-phase spawn view does not give the site away."""
+        once the round is live, so the prep-phase spawn view does not give the site away.
+
+        Prep drones move slowly; checking every tick was burning LOS raycasts for little gain.
+        Eyes are batched into one `segments_blocked` call.
+        """
         if self.phase not in ("prep", "live", "planted"):
             return
+        pending = [i for i in self.active_sites if i not in self.found_sites]
+        if not pending:
+            return
         att = self.team_of_side(ATT)
-        for i in self.active_sites:
-            if i in self.found_sites:
-                continue
-            for it in self.w.gadgets.items.values():
-                if it["kind"] == "drone" and it["team"] == att and self._sees_site(i, it["pos"]):
+        eyes = []
+        for it in self.w.gadgets.items.values():
+            if it["kind"] == "drone" and it["team"] == att:
+                eyes.append(np.asarray(it["pos"], dtype=np.float64) + np.array([0.0, 0.0, 0.15]))
+        if self.phase != "prep":
+            for a in self.members(att):
+                if a.alive and not a.view_mode:
+                    eyes.append(np.asarray(a.eye(), dtype=np.float64))
+        if not eyes:
+            return
+        p0, p1, tags = [], [], []
+        for i in pending:
+            s = self.sites[i]
+            c = self.site_centers[i]
+            target = np.array([c[0], c[1], s.get("z", s["zmin"]) + 1.1])
+            for eye in eyes:
+                if self.in_zone(eye, s):
                     self.found_sites.add(i)
                     break
-            else:
-                if self.phase == "prep":
+                if float(np.linalg.norm(eye - target)) > 45.0:
                     continue
-                for a in self.members(att):
-                    if a.alive and not a.view_mode and self._sees_site(i, a.eye()):
-                        self.found_sites.add(i)
-                        break
+                p0.append(eye)
+                p1.append(target)
+                tags.append(i)
+        if not p0:
+            return
+        blocked = segments_blocked(np.asarray(p0), np.asarray(p1), self.w.los_min, self.w.los_max, chunk=256)
+        for i, hit in zip(tags, blocked):
+            if not hit:
+                self.found_sites.add(int(i))
 
     def _sees_site(self, i: int, pos) -> bool:
         s = self.sites[i]

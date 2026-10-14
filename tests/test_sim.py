@@ -195,6 +195,24 @@ def test_multiagent_api():
     assert set(rew) == {"agent_0", "agent_2"}
 
 
+def test_segment_clear_matches_visibility_boxes():
+    """LOS helper must agree with the chunked box path used by visibility()."""
+    from fpsrl.geometry import raycast_boxes, segments_blocked
+    w = World(MatchConfig(team_size=1, map_name="bank", mode="tdm", seed=0))
+    w.reset(0)
+    # Soft drywall at x = -6 in the bank basement.
+    p0 = np.array([-8.0, -14.0, -2.8])
+    p1 = np.array([-4.0, -14.0, -2.8])
+    clear = p0 + np.array([0.3, 0.0, 0.0])
+    assert not w.segment_clear(p0, p1)
+    assert w.segment_clear(p0, clear)
+    dist = float(np.linalg.norm(p1 - p0))
+    t, _, _ = raycast_boxes(p0[None], ((p1 - p0) / dist)[None], dist, w.bmin, w.bmax)
+    assert t[0] < dist - 1e-3
+    assert segments_blocked(p0[None], p1[None], w.los_min, w.los_max, chunk=256)[0]
+    assert not segments_blocked(p0[None], clear[None], w.los_min, w.los_max, chunk=256)[0]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -11,6 +11,7 @@
 import argparse
 
 from fpsrl.maps import MAPS, MODES
+from fpsrl.profile import Profile
 from fpsrl.render.app import App
 from fpsrl.render.game import GameApp
 from fpsrl.weapons import PRIMARY_CHOICES
@@ -30,8 +31,10 @@ def main():
     p.add_argument("--size", default="1600x900")
     p.add_argument("--fullscreen", action="store_true")
     p.add_argument("--no-vsync", action="store_true")
-    p.add_argument("--no-shadows", action="store_true")
-    p.add_argument("--msaa", type=int, default=4)
+    p.add_argument("--no-shadows", action="store_true", help="disable shadows (overrides --graphics)")
+    p.add_argument("--msaa", type=int, default=None, help="0/2/4/8; default follows --graphics / settings")
+    p.add_argument("--graphics", default=None, choices=["low", "medium", "high"],
+                   help="quality preset (default: profile setting, usually medium)")
     p.add_argument("--sensitivity", type=float, default=1.6)
     p.add_argument("--autoplay", action="store_true", help="the player is controlled by a bot (implies --quick)")
     p.add_argument("--spectate", action="store_true",
@@ -41,6 +44,8 @@ def main():
     p.add_argument("--shot-time", type=float, default=6.0)
     a = p.parse_args()
     w, h = (int(v) for v in a.size.lower().split("x"))
+    gfx = a.graphics or Profile.load().graphics
+    shadows = False if a.no_shadows else None
     if a.quick or a.autoplay or a.spectate or a.screenshot:
         diff = a.difficulty
         try:
@@ -49,12 +54,16 @@ def main():
             pass
         app = GameApp(team_size=a.team_size, difficulty=diff, primary=a.primary, kill_limit=a.kill_limit,
                       time_limit=a.time_limit, size=(w, h), fullscreen=a.fullscreen, vsync=not a.no_vsync,
-                      shadows=not a.no_shadows, msaa=a.msaa, sensitivity=a.sensitivity, autoplay=a.autoplay,
-                      seed=a.seed, screenshot=a.screenshot, shot_time=a.shot_time, team=a.team,
-                      map_name=a.map, mode=a.mode, spectate=a.spectate)
+                      shadows=shadows, msaa=a.msaa, graphics=gfx, sensitivity=a.sensitivity,
+                      autoplay=a.autoplay, seed=a.seed, screenshot=a.screenshot, shot_time=a.shot_time,
+                      team=a.team, map_name=a.map, mode=a.mode, spectate=a.spectate)
     else:
+        if a.graphics:
+            prof = Profile.load()
+            prof.graphics = a.graphics
+            prof.save()
         app = App(size=(w, h), fullscreen=True if a.fullscreen else None, vsync=not a.no_vsync,
-                  shadows=not a.no_shadows, msaa=a.msaa)
+                  shadows=shadows, msaa=a.msaa)
     app.run()
 
 

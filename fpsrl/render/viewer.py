@@ -203,7 +203,8 @@ class Viewer:
 
     def __init__(self, world: World, pov: int = 0, onscreen: bool = True, size=(1600, 900),
                  shadows: bool = True, vsync: bool = False, msaa: int = 4, fullscreen: bool = False,
-                 hud: bool = True, viewmodel: bool = True, audio: bool = True, title: str = "FPS-RL"):
+                 hud: bool = True, viewmodel: bool = True, audio: bool = True, title: str = "FPS-RL",
+                 shadow_size: int = 2048):
         from direct.showbase.ShowBase import ShowBase
 
         configure(onscreen, size, vsync, msaa, fullscreen, title)
@@ -218,7 +219,8 @@ class Viewer:
         base.textures = self.textures = TextureLibrary()
         self.models = ModelCache()
         base.render.setShaderAuto()
-        base.render.setAntialias(AntialiasAttrib.M_multisample)
+        if msaa:
+            base.render.setAntialias(AntialiasAttrib.M_multisample)
         base.cam.node().setCameraMask(MAIN_MASK)
         base.camLens.setNearFar(0.04, 3000.0)
         base.camLens.setFov(BASE_HFOV)
@@ -226,7 +228,9 @@ class Viewer:
         self.render = base.render
         self.world = world
         self.shadows = shadows
-        self.scene = WorldScene(base, world.map, self.textures, shadows=shadows)
+        self.shadow_size = int(shadow_size)
+        self.scene = WorldScene(base, world.map, self.textures, shadows=shadows,
+                                shadow_size=self.shadow_size)
         self.destruct_view = None
         self.gadget_view = None
         self.bomb_beep_at = 0.0
@@ -294,7 +298,8 @@ class Viewer:
             n.removeNode()
         if world.map.name != self.scene.map.name:
             self.scene.destroy()
-            self.scene = WorldScene(self.base, world.map, self.textures, shadows=self.shadows)
+            self.scene = WorldScene(self.base, world.map, self.textures, shadows=self.shadows,
+                                    shadow_size=self.shadow_size)
         self.world = world
         self.pov = pov
         if self.hud is not None:
