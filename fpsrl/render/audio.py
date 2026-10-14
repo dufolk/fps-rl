@@ -279,15 +279,16 @@ def build_library() -> dict[str, np.ndarray]:
 def ear_offset(delta, forward, right, up, radius=5.0, min_dist=0.35):
     """Listener-relative position for a world offset.
 
-    OpenAL ignores `setBalance`, so sounds are placed on a fixed-radius sphere around the
-    listener: +X is the right ear, +Y is in front, -Y is behind. Loudness stays separate.
+    OpenAL ignores `setBalance`, so sounds sit on a fixed-radius sphere: +Y is in front
+    and -Y is behind. The lateral axis is negated so a source on the camera's right
+    reaches the right ear. Loudness stays separate.
     """
     dx, dy, dz = float(delta[0]), float(delta[1]), float(delta[2])
     d = math.sqrt(dx * dx + dy * dy + dz * dz)
     if d <= min_dist:
         return 0.0, 0.01, 0.0
     k = radius / d
-    x = (dx * right[0] + dy * right[1] + dz * right[2]) * k
+    x = -(dx * right[0] + dy * right[1] + dz * right[2]) * k
     y = (dx * forward[0] + dy * forward[1] + dz * forward[2]) * k
     z = (dx * up[0] + dy * up[1] + dz * up[2]) * k
     return x, y, z
