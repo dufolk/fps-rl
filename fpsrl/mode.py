@@ -12,8 +12,6 @@ import math
 
 import numpy as np
 
-from .geometry import poly_center
-
 ATT, DEF = 0, 1  # map sides (index into map.spawns)
 _ROUND_UID = itertools.count(1)
 PHASES = ("freeze", "live", "over")
@@ -46,8 +44,6 @@ class Elimination:
         self.round_no = 0
         self.wins = [0, 0]
         self.swapped = 0
-        self.sites = self.w.map.objectives.get("sites", [])
-        self.site_centers = [poly_center(s["poly"]) for s in self.sites]
         self.phase = "over"
         self.phase_end = 0.0
         self.last_result = None
@@ -138,7 +134,7 @@ class Elimination:
 
     def obs(self, a) -> np.ndarray:
         """[side, phase one-hot(3), time left, own wins, enemy wins, round, allies alive, enemies alive,
-        nearest site dist, nearest site bearing]"""
+        zone margin, bearing to safe zone center]"""
         o = np.zeros(12, dtype=np.float32)
         o[0] = 1.0 if self.side(a.team) == ATT else -1.0
         o[1 + PHASES.index(self.phase)] = 1.0
@@ -150,9 +146,10 @@ class Elimination:
         n = max(1, self.w.cfg.team_size)
         o[8] = len(self.members(a.team, alive_only=True)) / n
         o[9] = len(self.members(1 - a.team, alive_only=True)) / n
-        if self.site_centers:
-            c = min(self.site_centers, key=lambda c: math.hypot(c[0] - a.pos[0], c[1] - a.pos[1]))
-            dx, dy = c[0] - a.pos[0], c[1] - a.pos[1]
-            o[10] = min(math.hypot(dx, dy) / 80.0, 1.0)
+        if self.w.zone:
+            cx, cy = self.w.zone["center"]
+            r = max(1.0, float(self.w.zone["radius"]))
+            dx, dy = cx - a.pos[0], cy - a.pos[1]
+            o[10] = float(np.clip((r - math.hypot(dx, dy)) / r, -1.0, 1.0))
             o[11] = math.sin(math.atan2(dy, dx) - math.radians(a.yaw))
         return o

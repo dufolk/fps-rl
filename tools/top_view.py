@@ -1,4 +1,4 @@
-"""Top-down collision map of a map with spawns and sites drawn on.
+"""Top-down collision map of a map with spawns drawn on.
 
     py tools/top_view.py <map> [out.png]
 
@@ -19,7 +19,7 @@ SCALE = 2
 
 
 def main():
-    name = sys.argv[1] if len(sys.argv) > 1 else "desert2"
+    name = sys.argv[1] if len(sys.argv) > 1 else "garage"
     out = sys.argv[2] if len(sys.argv) > 2 else f"shots/{name}_top.png"
     m = load_map(name)
     mn = np.array([b.mn for b in m.boxes if b.solid])
@@ -67,11 +67,11 @@ def main():
         dr.line([(0, b), (W * SCALE, b)], fill=(130, 130, 130) if gy % 10 == 0 else (60, 60, 60))
         if gy % 10 == 0:
             dr.text((2, b + 2), str(gy), fill=(255, 255, 255))
-    for zone in m.objectives.get("sites", []):
-        pts = [px(*p) for p in zone["poly"]]
-        dr.polygon(pts, outline=(255, 60, 60))
-        cx, cy = np.mean(pts, axis=0)
-        dr.text((cx, cy), zone["name"], fill=(255, 255, 255))
+    zone = (m.objectives or {}).get("zone")
+    if zone:
+        cx, cy = px(*zone["center"])
+        r = zone["radius"] / RES * SCALE
+        dr.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(80, 190, 255), width=2)
     for team, pts in m.spawns.items():
         col = (255, 150, 60) if team == 0 else (90, 170, 255)
         for p in pts:

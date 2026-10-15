@@ -1,23 +1,21 @@
-"""Imported map meshes (maps/data/<name>/mesh.npz + textures), drawn instead of the collision boxes."""
+"""Imported map meshes (maps/data/<name>/mesh.npz), drawn instead of the collision boxes.
+
+The mesh carries one triangle list per material key with world-space UVs; the key names a
+procedural texture in `TextureLibrary`, so the map ships no image files."""
 from __future__ import annotations
 
 import os
 
 import numpy as np
-from panda3d.core import ColorWriteAttrib, Geom, GeomNode, GeomTriangles, GeomVertexData, NodePath
+from panda3d.core import Geom, GeomNode, GeomTriangles, GeomVertexData, NodePath
 
 from . import models as M
 from .meshes import vertex_format
-from .textures import flat_normal, make_texture
 
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "maps", "data")
-WOOD = ("Crt", "Crte", "Door")
-
-
-def _load_png(path):
-    from PIL import Image
-    img = Image.open(path).convert("RGB")
-    return np.asarray(img)
+SURFACE = {"car_white": "paint", "car_red": "paint", "car_blue": "paint", "car_green": "paint",
+           "roof_metal": "metal", "metal_dark": "metal", "bark": "wood", "wood_floor": "wood",
+           "tile_white": "paint"}
 
 
 def _tangents(pos, uv, tri):
@@ -67,45 +65,16 @@ def _geom_node(name, pos, uv, tri):
     return NodePath(node)
 
 
-def has_sky_shell(name) -> bool:
-    """True when the imported map is sealed by a sky shell (nothing outside it should be drawn)."""
-    path = os.path.join(DATA, name, "mesh.npz")
-    return os.path.exists(path) and "sky_pos" in np.load(path).files
-
-
-def build(parent, name, ts_normal):
+def build(parent, name, ts_normal, textures):
     """Attach the imported mesh `name` under `parent`; returns its root NodePath."""
-    folder = os.path.join(DATA, name)
-    d = np.load(os.path.join(folder, "mesh.npz"))
+    d = np.load(os.path.join(DATA, name, "mesh.npz"))
     root = parent.attachNewNode(f"mesh_{name}")
-    flat = make_texture(flat_normal(), f"{name}_flat_n")
-    for k, (mat, label, tex) in enumerate(zip(d["materials"], d["names"], d["textures"])):
-        np_ = _geom_node(str(mat), d[f"pos{k}"].astype(np.float64), d[f"uv{k}"].astype(np.float64),
-                         d[f"tri{k}"])
+    for k, mat in enumerate(d["materials"]):
+        mat = str(mat)
+        np_ = _geom_node(mat, d[f"pos{k}"].astype(np.float64), d[f"uv{k}"].astype(np.float64), d[f"tri{k}"])
         np_.reparentTo(root)
-        path = os.path.join(folder, str(tex))
-        if tex and os.path.exists(path):
-            np_.setTexture(make_texture(_load_png(path), str(tex)), 1)
-        np_.setTexture(ts_normal, flat, 1)
-        surface = "wood" if any(w in str(label) for w in WOOD) else "cloth"
-        np_.setMaterial(M.make_material(surface), 1)
-    if "sky_pos" in d.files:
-        _sky_mask(root, d["sky_pos"].astype(np.float64), d["sky_tri"])
+        col, nrm = textures.get(mat)
+        np_.setTexture(col, 1)
+        np_.setTexture(ts_normal, nrm, 1)
+        np_.setMaterial(M.make_material(SURFACE.get(mat, "cloth")), 1)
     return root
-
-
-def _sky_mask(root, pos, tri):
-    """The BSP's sky-shell faces: depth only, drawn right after the sky dome, so whatever lies past the
-    map's edge (the procedural ground and backdrop) is hidden behind sky, as in Source."""
-    from .world_scene import SHADOW_MASK
-    uv = np.zeros((len(pos), 2))
-    node = _geom_node("sky_shell", pos, uv, tri)
-    node.reparentTo(root)
-    node.setAttrib(ColorWriteAttrib.make(ColorWriteAttrib.C_off))
-    node.setBin("background", 10)
-    node.setDepthWrite(True)
-    node.setLightOff(1)
-    node.setFogOff(1)
-    node.setShaderOff(1)
-    node.setTextureOff(1)
-    node.hide(SHADOW_MASK)

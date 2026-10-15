@@ -33,8 +33,10 @@ class MapData:
     strategic_points: list
     water_z: float = -5.0
     sun_dir: tuple = (-0.55, 0.45, -0.55)
-    theme: str = "desert"  # renderer branch
-    # sites: [{"name", "poly": [[x, y]...], "zmin", "zmax", "z"}]  (bot goals / observation landmarks)
+    theme: str = "garage"  # renderer branch
+    # zone: {"center": (cx, cy), "radius": float, "dps": float}  (poison zone outside the OBJ edge)
     objectives: dict = field(default_factory=dict)
     nav_max_floor: float = 1.3  # floors above this are not walkable for the nav grid
+    nav_bounds: tuple | None = None  # optional tighter bounds for the bot NavGrid
     mesh: str = ""  # imported render mesh under maps/data/<mesh>/ (collision boxes are then invisible)
+    ground_z: float = -0.03  # height of the renderer's far ground plane

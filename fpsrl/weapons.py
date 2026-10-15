@@ -146,13 +146,15 @@ WEAPONS: dict[str, WeaponSpec] = {
 }
 
 ITEM_ZH = {"glock": "格洛克", "knife": "M9 军刀", "frag": "高爆手雷", "smoke": "烟雾弹", "flash": "闪光弹",
-           "molotov": "燃烧瓶"}
+           "molotov": "燃烧瓶", "zone": "毒圈"}
 
 
 def item_name(name: str, zh: bool) -> str:
     """Display name of a weapon in the UI language (guns keep their model names)."""
     if zh and name in ITEM_ZH:
         return ITEM_ZH[name]
+    if name == "zone":
+        return "Zone"
     return WEAPONS[name].display if name in WEAPONS else name
 
 

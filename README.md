@@ -4,7 +4,7 @@
 
 本分支只做实验环境：
 
-- **地图**：沙漠灰 `desert2`（CS 1.6 de_dust2 几何与贴图）。
+- **地图**：假车库 `garage`（`医院-假车库_75m.obj` 导入，贴图全部程序生成）。没有 A/B 点。OBJ 外缘（半径 74.5 m）是毒圈，圈外每秒扣 8 血。
 - **模式**：只有歼灭。清空对方即赢下回合；时间耗尽时存活人数多的一方获胜，人数相同算平局。每回合全员满状态重生，没有经济和购买。参数默认值：冻结时间 5 秒、回合 115 秒、结算 5 秒、先赢 13 回合，12 回合后换边。
 - **武器方案**：固定 3 套，每套都带格洛克、军刀、高爆手雷、烟雾弹、闪光弹和燃烧弹。
 
@@ -124,13 +124,11 @@ fpsrl/
   sim.py mode.py         权威模拟、歼灭模式
   geometry.py nav.py     射线/遮挡、导航图
   bots.py                规则 bot
-  maps/                  沙漠灰
+  maps/                  假车库
   obs.py envs.py         观测、Gymnasium / 多智能体环境
   policy.py              PPO 策略网络
   render/                Panda3D 渲染、HUD、音效、本地对局（game.py）
 play.py                  入口（人操作 / 观战）
-tools/import_dust2.py    重新导入 de_dust2 网格
+tools/import_garage.py   重新导入假车库 OBJ（py tools/import_garage.py [obj路径]）
 tools/top_view.py        地图俯视图
 ```
-
-沙漠灰模型：[CS 1.6 de_dust2](https://sketchfab.com/3d-models/de-dust2-cs-map-056008d59eb849a29c0ab6884c0c3d87) by vrchris，CC-BY 4.0。

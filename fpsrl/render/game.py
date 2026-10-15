@@ -41,16 +41,16 @@ B cycle loadout (now during freeze time, else next round)    TAB scoreboard
 ESC release mouse    F2 aim hold/toggle    F3 third person    F4 fps    F5 restart    +/- sensitivity
 When dead: LMB/RMB cycle spectate"""
 WATCH_HELP_ZH = """[F1] 隐藏帮助
-观战机器人。默认上帝视角，不受闪光弹影响
+观战机器人（仅上帝视角 / 第三人称）
 WASD 移动    鼠标 转向    Q 上升    E 下降    Shift 加速
-F 切换第一人称 / 上帝视角
-第一人称时 左键/右键 切换对象
+F 切换第三人称 / 上帝视角
+第三人称时 左键/右键 切换对象
 Tab 计分板    Esc 释放鼠标    F5 重开"""
 WATCH_HELP_EN = """[F1] hide help
-Watch the bots. God view by default; flashbangs do not blind you
+Watch the bots (god view / third person only)
 WASD move    mouse look    Q up    E down    SHIFT faster
-F toggles first person / god view
-In first person: LMB/RMB cycle targets
+F toggles third person / god view
+In third person: LMB/RMB cycle targets
 TAB scoreboard    ESC release mouse    F5 restart"""
 
 
@@ -127,8 +127,7 @@ class PlayerController:
             self.capture(True)
             return
         if self.watch:
-            if not self.viewer.god:
-                self.viewer.cycle_follow(1 if which == "fire" else -1)
+            self.viewer.cycle_follow(1 if which == "fire" else -1)
             return
         if self.viewer.spectate_active():
             self.viewer.cycle_spectate(1 if which == "fire" else -1)
@@ -202,7 +201,7 @@ class PlayerController:
                   ("Aim mode: " + ("TOGGLE" if mode else "HOLD")))
 
     def _third_person(self):
-        if self.enabled and not self.watch:
+        if self.enabled and not self.watch and not self.viewer.spectate_active():
             self.viewer.toggle_third_person()
 
     def _toggle_fps(self):
@@ -321,7 +320,7 @@ class LocalSession:
     `team * team_size`; `spectate=True`: every agent is a bot and the camera is free."""
 
     def __init__(self, viewer: Viewer, settings, team_size=4, difficulty="normal", team=0, loadout="random",
-                 seed=None, autoplay=False, map_name="desert2", mode_params=None, spectate=False):
+                 seed=None, autoplay=False, map_name="garage", mode_params=None, spectate=False):
         self.player = team * team_size
         self.spectate = spectate
         loadouts = [None] * (2 * team_size)  # bots: random fixed loadout each match
@@ -364,6 +363,7 @@ class LocalSession:
     def update(self, dt):
         w = self.world
         me = w.agents[self.player]
+        me.third_person = self.viewer.third_person and not self.spectate
         self.ctrl.mouse_look(me, self.autoplay)
         if self.spectate:
             self.ctrl.fly_camera(dt)
@@ -398,7 +398,7 @@ class GameApp:
 
     def __init__(self, team_size=4, difficulty="normal", loadout="random", size=(1600, 900), fullscreen=False,
                  vsync=True, sensitivity=1.6, autoplay=False, seed=None, screenshot=None, shot_time=6.0, team=0,
-                 map_name="desert2", mode_params=None, spectate=False, graphics="medium"):
+                 map_name="garage", mode_params=None, spectate=False, graphics="medium"):
         self.settings = Settings(sensitivity=sensitivity)
         opts = GRAPHICS_PRESETS.get(graphics, GRAPHICS_PRESETS["medium"])
         world = World(MatchConfig(team_size=team_size, map_name=map_name))

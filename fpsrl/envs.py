@@ -64,7 +64,7 @@ class RewardConfig:
 
 @dataclass
 class EnvConfig:
-    map_name: str = "desert2"
+    map_name: str = "garage"
     mode_params: dict = field(default_factory=dict)  # Elimination overrides (freeze_time, win_rounds...)
     team_size: int = 4
     learner_team: int = 0

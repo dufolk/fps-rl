@@ -14,8 +14,7 @@ from panda3d.core import (AntialiasAttrib, CardMaker, FrameBufferProperties, Per
                           Texture, TransparencyAttrib, Vec3, WindowProperties, loadPrcFileData)
 
 from .. import config as C
-from ..geometry import raycast_boxes
-from ..sim import LEAN_DIST, LEAN_ROLL, World, dir_from_angles
+from ..sim import LEAN_DIST, LEAN_ROLL, World
 from .effects import Effects
 from .models import ModelCache, body_model
 from .textures import TextureLibrary
@@ -196,6 +195,8 @@ class Viewer:
             base.render.setAntialias(AntialiasAttrib.M_multisample)
         base.cam.node().setCameraMask(MAIN_MASK)
         base.camLens.setNearFar(0.04, 3000.0)
+        if size[0] > 0 and size[1] > 0:
+            base.camLens.setAspectRatio(size[0] / size[1])
         base.camLens.setFov(BASE_HFOV)
         base.setBackgroundColor(0.78, 0.74, 0.7, 1)
         self.render = base.render
@@ -300,6 +301,9 @@ class Viewer:
             self.on_reshape(win)
 
     def cycle_pov(self):
+        if self.watch:
+            self.cycle_follow(1)
+            return
         if self.spectate_active():
             self.cycle_spectate(1)
             return
@@ -337,7 +341,7 @@ class Viewer:
         return [a for a in w.agents if a.alive and a.id != me.id]
 
     def _resolve_spectate(self):
-        """Dead, no respawn: follow a living teammate in their own camera (first person unless F3)."""
+        """Dead, no respawn: follow a living teammate in third person."""
         if not self.spectate_active():
             self.spectate_id = None
             if self.pov != self.owner:
@@ -355,7 +359,7 @@ class Viewer:
             self._apply_pov(self.spectate_id, own=False)
         watched = self.world.agents[self.pov]
         if watched.alive:
-            self.first_person_now = not self.third_person
+            self.first_person_now = False
 
     def cycle_spectate(self, direction: int):
         ids = [a.id for a in self._spectate_candidates()]
@@ -370,6 +374,8 @@ class Viewer:
 
     def toggle_third_person(self):
         self.third_person = not self.third_person
+        if 0 <= self.owner < len(self.world.agents):
+            self.world.agents[self.owner].third_person = self.third_person and not self.watch
 
     def inspect(self):
         """F key: weapon inspect animation."""
@@ -380,10 +386,10 @@ class Viewer:
 
     # ------------------------------------------------------------------ events
     def start_watch(self):
-        """God-view camera over the current map. F drops into a bot's eyes."""
+        """God-view camera over the current map. F drops into a bot's third-person camera."""
         self.watch = True
         self.god = True
-        self.third_person = False
+        self.third_person = True
         self.follow_id = None
         c = self.scene.center
         ext = float(self.scene.extent)
@@ -405,25 +411,25 @@ class Viewer:
                 return
             self.god = False
             self.follow_id = aid
-            self.third_person = False
+            self.third_person = True
             self._apply_pov(aid, own=False)
             return
-        cam = self.base.camera
-        p = cam.getPos(self.render)
-        self.fly_pos = np.array([p.x, p.y, p.z], dtype=np.float64)
-        h, pitch, _r = cam.getHpr()
-        self.fly_yaw = (h + 90.0) % 360.0
-        self.fly_pitch = max(-89.0, min(89.0, pitch))
+        a = self.world.agents[self.pov]
+        yr = math.radians(a.yaw)
+        self.fly_yaw = a.yaw
+        self.fly_pitch = -42.0
+        self.fly_pos = np.array([a.pos[0] - math.cos(yr) * 14.0,
+                                 a.pos[1] - math.sin(yr) * 14.0,
+                                 a.pos[2] + 14.0], dtype=np.float64)
         self.god = True
 
     def cycle_follow(self, direction: int):
-        if self.god:
-            return
         ids = [a.id for a in self.world.agents if a.alive]
         if not ids:
             return
-        if self.follow_id in ids:
-            i = (ids.index(self.follow_id) + direction) % len(ids)
+        cur = self.follow_id if self.follow_id in ids else self.pov
+        if cur in ids:
+            i = (ids.index(cur) + direction) % len(ids)
         else:
             i = 0
         self.follow_id = ids[i]
@@ -636,6 +642,8 @@ class Viewer:
             elif t == "round_end" and e["team"] >= 0:
                 self._sound("round_win" if e["team"] == w.agents[me].team else "round_lose", None, 0.7)
             elif t == "round_start":
+                self.effects.clear()
+                self.pending_sounds.clear()
                 self._sound("round_start", None, 0.6)
         # deferred sounds
         keep = []
@@ -681,19 +689,23 @@ class Viewer:
                 else:
                     m.root.show()
                     if self.watch:
-                        sv.tag.show()
-                        sv.tag.setZ(a.height + 0.58)
-                        tint = _TEAM_TINT[a.team]
-                        sv.tag_node.setTextColor(*tint)
-                        flashed, burning = agent_markers(w, a)
-                        frac = max(0.0, min(1.0, a.hp / C.MAX_HP))
-                        if frac < 0.35:
-                            fill = (1.0, 0.28, 0.2, 1.0)
-                        elif frac < 0.6:
-                            fill = (1.0, 0.78, 0.25, 1.0)
+                        if a.id == self.pov and not self.god:
+                            sv.tag.hide()
+                            sv.plate.hide()
                         else:
-                            fill = tint
-                        sv.set_overhead(a.height + 0.32, frac, fill, flashed, burning)
+                            sv.tag.show()
+                            sv.tag.setZ(a.height + 0.58)
+                            tint = _TEAM_TINT[a.team]
+                            sv.tag_node.setTextColor(*tint)
+                            flashed, burning = agent_markers(w, a)
+                            frac = max(0.0, min(1.0, a.hp / C.MAX_HP))
+                            if frac < 0.35:
+                                fill = (1.0, 0.28, 0.2, 1.0)
+                            elif frac < 0.6:
+                                fill = (1.0, 0.78, 0.25, 1.0)
+                            else:
+                                fill = tint
+                            sv.set_overhead(a.height + 0.32, frac, fill, flashed, burning)
                     else:
                         sv.plate.hide()
                         sv.tag.setZ(2.1)
@@ -744,10 +756,11 @@ class Viewer:
         sh = self.shake
         jitter = (random.uniform(-1, 1) * sh * 1.6, random.uniform(-1, 1) * sh * 1.6, random.uniform(-1, 1) * sh)
         spec = a.spec if a.slot in a.inv else None
-        scoped_fp = bool(a.alive and a.ads and spec is not None and spec.scope_overlay)
+        spec_view = self.watch or self.spectate_active()
+        scoped_fp = bool(a.alive and a.ads and spec is not None and spec.scope_overlay and not spec_view)
         want_ads = bool(a.alive and a.ads and spec is not None and spec.ads_fov)
         self.tp_ads += ((1.0 if want_ads else 0.0) - self.tp_ads) * min(1.0, dt * 14.0)
-        self.first_person_now = a.alive and (not self.third_person or scoped_fp)
+        self.first_person_now = a.alive and not spec_view and (not self.third_person or scoped_fp)
         if self.first_person_now:
             self.death_cam = None
             pos = a.prev_pos + (a.pos - a.prev_pos) * alpha
@@ -759,7 +772,7 @@ class Viewer:
             roll = 0.0 if scoped_fp else ((a.lean_off / LEAN_DIST) * LEAN_ROLL if LEAN_DIST else 0.0)
             cam.setHpr(a.yaw + punch[1] - 90.0 + jitter[0], a.pitch + punch[0] + jitter[1], jitter[2] + roll)
         elif a.alive:
-            self._third_person_camera(a, alpha)
+            self._third_person_camera(a, alpha, jitter)
         else:
             if self.death_cam is None:
                 e = a.eye()
@@ -790,48 +803,25 @@ class Viewer:
                 self.fov = target_fov
             self.base.camLens.setFov(self.fov)
 
-    def _third_person_camera(self, a, alpha):
-        """Over-the-shoulder camera aimed at the point the gun actually hits, so the screen-centre
-        crosshair is truthful. Aiming pulls the camera in to the shoulder."""
-        w = self.world
-        cam = self.base.camera
+    def _third_person_camera(self, a, alpha, jitter):
+        """Over-the-shoulder camera framing the upper body. Camera orientation follows the
+        agent's smooth look angles directly so the crosshair never jumps at geometry edges;
+        bullets raycast from `a.eye()` toward the point under the crosshair (`World.aim_angles`)."""
         pos = a.prev_pos + (a.pos - a.prev_pos) * alpha
         punch = a.prev_punch + (a.punch - a.prev_punch) * alpha
-        k = self.tp_ads
-        yr = math.radians(a.yaw)
-        fwd = Vec3(math.cos(yr), math.sin(yr), 0)
-        right = Vec3(math.sin(yr), -math.cos(yr), 0)
-        side = -1.0 if a.lean_off < -0.05 else 1.0
-        eye = a.eye()
-        eye = Point3(float(eye[0]), float(eye[1]), float(eye[2]))
-        # aim point along the real bullet path
-        d = dir_from_angles(a.yaw + punch[1], a.pitch + punch[0])
-        t, _, _ = raycast_boxes(np.array([eye]), d[None], 200.0, w.bmin, w.bmax)
-        aim = eye + Vec3(*d) * float(min(t[0], 200.0))
-        # shoulder anchor
-        anchor = Point3(pos[0], pos[1], pos[2] + a.height - 0.2)
-        back = 3.2 + (1.6 - 3.2) * k
-        lat = (0.6 + (0.78 - 0.6) * k) * side
-        up = 0.5 + (0.3 - 0.5) * k
-        pitch = math.radians(a.pitch)
-        want = anchor - fwd * back * math.cos(pitch) + right * lat + Vec3(0, 0, up - math.sin(pitch) * back * 0.5)
-        dv = want - anchor
-        dist = dv.length()
-        dv.normalize()
-        tt, _, _ = raycast_boxes(np.array([anchor]), np.array([dv]), dist, w.bmin, w.bmax)
-        cam_pos = anchor + dv * max(0.15, min(dist, float(tt[0]) - 0.2))
-        cam.setPos(cam_pos)
-        if (aim - cam_pos).length() < 0.6:
-            aim = cam_pos + Vec3(*d) * 4.0
-        cam.lookAt(aim)
+        cam_pos, _ = self.world.third_person_camera(a, pos, punch, self.tp_ads)
+        cam = self.base.camera
+        cam.setPos(float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2]))
         roll = (a.lean_off / LEAN_DIST) * LEAN_ROLL * 0.5 if LEAN_DIST else 0.0
-        cam.setR(cam.getR() + roll)
+        cam.setHpr(a.yaw + punch[1] - 90.0 + jitter[0], a.pitch + punch[0] + jitter[1], jitter[2] + roll)
 
     def vfov(self) -> float:
         return float(self.base.camLens.getFov()[1])
 
     def sync(self, dt: float, alpha: float = 1.0):
         self.t += dt
+        if 0 <= self.owner < len(self.world.agents):
+            self.world.agents[self.owner].third_person = self.third_person and not self.watch
         if self.watch:
             self._watch_follow()
             if self.god:
@@ -842,13 +832,13 @@ class Viewer:
             self.hud.watch = self.watch
             self.hud.god_view = self.watch and self.god
         self._process_events()
-        self._sync_soldiers(dt, alpha)
-        self._sync_projectiles(dt)
         if self.watch and self.god:
             self._god_camera()
             self.first_person_now = False
         else:
             self._camera(dt, alpha)
+        self._sync_soldiers(dt, alpha)
+        self._sync_projectiles(dt)
         self.scene.update(self.t)
         self.effects.update(dt)
         a = self.world.agents[self.pov]

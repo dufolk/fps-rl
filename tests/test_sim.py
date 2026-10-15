@@ -316,12 +316,37 @@ def test_multiagent_api():
     assert set(rew) == {"agent_0", "agent_2"}
 
 
+def test_poison_zone_drains_hp_outside_obj_edge():
+    w = _world(5, 0)
+    assert "sites" not in (w.map.objectives or {})
+    assert "zone" in w.map.objectives
+    assert not w.visibility()[:5, 5:].any()  # indoor spawns cannot see the enemy team at round start
+    a = w.agents[0]
+    hp0 = a.hp
+    for _ in range(90):
+        w.step({})
+    assert a.hp == hp0 and not w.outside_zone(a.pos)
+
+    r = w.zone["radius"]
+    x, y = r + 3.0, 0.0
+    ins = (w.smin[:, 0] <= x) & (x <= w.smax[:, 0]) & (w.smin[:, 1] <= y) & (y <= w.smax[:, 1]) & (w.smax[:, 2] < 4.0)
+    a.pos[:] = (x, y, float(w.smax[ins, 2].max()) + 0.02)
+    a.prev_pos[:] = a.pos
+    a.yaw = 0.0
+    assert w.outside_zone(a.pos)
+    ev = []
+    for _ in range(90):  # 1.5 s at 60 Hz -> 3 ticks of slow poison damage
+        ev += w.step({a.id: Action(move_forward=1.0)})
+    zone_dmg = [e for e in ev if e["type"] == "damage" and e["kind"] == "zone"]
+    assert len(zone_dmg) == 3 and 0.0 < a.hp < hp0 and a.on_ground
+
+
 def test_segment_clear_matches_raycast():
     """LOS helper (chunked box path used by visibility()) must agree with the bullet raycast."""
     from fpsrl.geometry import raycast_boxes
     w = World(MatchConfig(team_size=1, seed=0))
     rng = np.random.default_rng(0)
-    (x0, y0), (x1, y1) = w.map.bounds
+    (x0, y0), (x1, y1) = w.map.nav_bounds or w.map.bounds
     blocked = 0
     for _ in range(300):
         p0 = np.array([rng.uniform(x0, x1), rng.uniform(y0, y1), rng.uniform(0.2, 6.0)])
@@ -334,6 +359,29 @@ def test_segment_clear_matches_raycast():
         assert w.segment_clear(p0, p1) == (not hit)
         blocked += hit
     assert blocked > 5
+
+
+def test_third_person_camera_and_crosshair_aim():
+    w = World(MatchConfig(team_size=1, loadouts=["rifle", "rifle"], seed=0,
+                          mode_params={"freeze_time": 0.0, "round_time": 60.0}))
+    a, b = w.agents[0], w.agents[1]
+    a.pos[:] = (-15.0, -4.0, 0.02)
+    a.prev_pos[:] = a.pos
+    a.yaw, a.pitch = -90.0, 0.0
+    a.third_person = True
+    cam_pos, cam_dir = w.third_person_camera(a)
+    # Closer over-the-shoulder camera (~1.65 m behind shoulder, ~0.36 m lateral)
+    assert 1.4 < float(np.linalg.norm(cam_pos[:2] - a.pos[:2])) < 1.9
+    # Place enemy directly on the third-person camera's crosshair line (offset laterally from a.pos)
+    t_eye = max(0.0, float(np.dot(a.eye() - cam_pos, cam_dir)))
+    target_pos = cam_pos + cam_dir * (t_eye + 8.0)
+    b.pos[:] = (target_pos[0], target_pos[1], 0.02)
+    b.prev_pos[:] = b.pos
+    a.ready_at = 0.0
+    hp0 = b.hp
+    ev = w.step({a.id: Action(fire=True)})
+    shots = [e for e in ev if e["type"] == "shot" and e["agent"] == a.id]
+    assert len(shots) == 1 and shots[0]["hit_agent"] == b.id and b.hp < hp0
 
 
 if __name__ == "__main__":

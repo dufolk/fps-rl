@@ -20,7 +20,7 @@ def main():
     p.add_argument("--team-size", type=int, default=4)
     p.add_argument("--team", type=int, default=0, choices=[0, 1])
     p.add_argument("--difficulty", default="normal", help="easy | normal | hard | insane | 0..1")
-    p.add_argument("--map", default="desert2", choices=sorted(MAPS))
+    p.add_argument("--map", default="garage", choices=sorted(MAPS))
     p.add_argument("--loadout", default="random", choices=[*LOADOUT_KEYS, "random"],
                    help="player loadout (bots always draw one at random)")
     p.add_argument("--win-rounds", type=int, default=None, help="rounds needed to win the match (default 13)")

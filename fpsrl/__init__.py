@@ -1,4 +1,4 @@
-"""FPS-RL experiment environment: elimination on desert2 with fixed rifle / sniper / shotgun loadouts."""
+"""FPS-RL experiment environment: elimination on the garage map with fixed rifle / sniper / shotgun loadouts."""
 from .sim import Action, MatchConfig, World
 from .envs import EnvConfig, FPSEnv, FPSMultiAgentEnv, RewardConfig
 from .bots import Bot

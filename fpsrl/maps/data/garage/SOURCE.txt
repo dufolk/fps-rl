@@ -1,0 +1,3 @@
+Source: 医院-假车库_75m.obj (untextured scene mesh, cm, Y up).
+Imported with tools/import_garage.py: metres, Z up, walls aligned to the axes, yard at z = 0,
+procedural materials with world-space UVs, collision voxelised into boxes.

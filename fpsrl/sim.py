@@ -56,7 +56,7 @@ def _crouch_only(act: Action) -> Action:
 @dataclass
 class MatchConfig:
     team_size: int = 4
-    map_name: str = "desert2"
+    map_name: str = "garage"
     tick_rate: int = C.TICK_RATE
     friendly_fire: bool = False
     # per-agent loadout key ("rifle" | "sniper" | "shotgun"); missing / None / "random" = random
@@ -152,6 +152,7 @@ class Agent:
         self.last_damage_dir = np.zeros(3)
         self.lean = 0.0  # smoothed lean input, -1..1
         self.lean_off = 0.0  # actual sideways head offset in metres (clamped by walls), + = right
+        self.third_person = False  # True when controlled from the over-the-shoulder camera
         self.frozen = False  # freeze time: can look, cannot move or shoot
         self.flash_until = 0.0
         self.flash_t0 = 0.0
@@ -274,6 +275,8 @@ class World:
                 self.agents.append(Agent(aid, team, f"{TEAM_NAMES[team]}-{i}", lo[aid] if aid < len(lo) else None))
         self.event_log: deque = deque(maxlen=4096)
         self.noises: deque = deque(maxlen=128)
+        self.zone = (self.map.objectives or {}).get("zone")
+        self._zone_acc = 0.0
         self.mode = Elimination(self)
         self.reset(self.cfg.seed)
 
@@ -317,7 +320,18 @@ class World:
         self.smokes = []
         self.fires = []
         self.pending_melee = []
+        self._zone_acc = 0.0
         self.noises.clear()
+
+    def zone_dist(self, pos) -> float:
+        """Signed distance outside the safe zone (> 0 means in the poison zone)."""
+        if not self.zone:
+            return -1e9
+        cx, cy = self.zone["center"]
+        return math.hypot(pos[0] - cx, pos[1] - cy) - self.zone["radius"]
+
+    def outside_zone(self, pos) -> bool:
+        return self.zone_dist(pos) > 0.0
 
     @property
     def score(self) -> list:
@@ -413,6 +427,7 @@ class World:
         self._update_melee()
         self._update_projectiles(dt)
         self._update_fires(dt)
+        self._update_zone(dt)
         self.smokes = [s for s in self.smokes if self.time < s.t1]
         self.time += dt
         self.tick += 1
@@ -765,6 +780,49 @@ class World:
             s *= spec.crouch_mult
         return s
 
+    def third_person_camera(self, a: Agent, pos=None, punch=None,
+                            ads_blend: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Over-the-shoulder camera `(cam_pos, cam_dir)` framing the upper body (PUBG-style)."""
+        pos = a.pos if pos is None else np.asarray(pos, dtype=np.float64)
+        punch = a.punch if punch is None else np.asarray(punch, dtype=np.float64)
+        if ads_blend is None:
+            spec = a.spec if a.slot in a.inv else None
+            k = 1.0 if (a.alive and a.ads and spec is not None and spec.ads_fov) else 0.0
+        else:
+            k = float(ads_blend)
+        yr = math.radians(a.yaw)
+        fwd = np.array([math.cos(yr), math.sin(yr), 0.0])
+        right = np.array([math.sin(yr), -math.cos(yr), 0.0])
+        side = -1.0 if a.lean_off < -0.05 else 1.0
+        anchor = np.array([pos[0], pos[1], pos[2] + a.height - 0.16])
+        back = 1.65 + (0.85 - 1.65) * k
+        lat = (0.36 + (0.42 - 0.36) * k) * side
+        up = 0.08 + (0.02 - 0.08) * k
+        pitch = math.radians(a.pitch + punch[0])
+        want = anchor - fwd * (back * math.cos(pitch)) + right * lat + np.array([0.0, 0.0, up - back * math.sin(pitch)])
+        dv = want - anchor
+        dist = float(np.linalg.norm(dv))
+        dv_unit = dv / max(dist, 1e-8)
+        tt, _, _ = raycast_boxes(anchor[None], dv_unit[None], dist, self.bmin, self.bmax)
+        cam_pos = anchor + dv_unit * max(0.15, min(dist, float(tt[0]) - 0.2))
+        cam_dir = dir_from_angles(a.yaw + punch[1], a.pitch + punch[0])
+        return cam_pos, cam_dir
+
+    def aim_angles(self, a: Agent, max_dist: float = 200.0) -> tuple[float, float]:
+        """Firing `(yaw, pitch)` from `a.eye()`. In third-person, rays from `a.eye()` toward the
+        3D point under the camera's screen-centre crosshair."""
+        spec = a.spec if a.slot in a.inv else None
+        scoped_fp = bool(a.ads and spec is not None and spec.scope_overlay)
+        if not a.third_person or scoped_fp:
+            return a.view_angles()
+        eye = a.eye()
+        cam_pos, cam_dir = self.third_person_camera(a)
+        t_eye = max(0.0, float(np.dot(eye - cam_pos, cam_dir)))
+        ray_origin = cam_pos + cam_dir * t_eye
+        hit = self.trace_bullet(ray_origin, cam_dir, max_dist, a.id)
+        target = ray_origin + cam_dir * max(0.35, float(hit["t"]))
+        return angles_to(eye, target)
+
     def _fire_gun(self, a: Agent, ws: WeaponState, spec):
         now = self.time
         ws.mag -= 1
@@ -772,7 +830,7 @@ class World:
             a.shots_in_burst = 0
         spread = self.current_spread(a)
         eye = a.eye()
-        yaw, pitch = a.view_angles()
+        yaw, pitch = self.aim_angles(a, spec.range)
         hits = []
         dealt: dict[int, list] = {}  # victim -> [damage, group, direction]; pellets land as one hit
         for _ in range(spec.pellets):
@@ -924,10 +982,11 @@ class World:
             spec = a.spec
             rng = spec.heavy_range if heavy else spec.melee_range
             eye = a.eye()
+            yaw, pitch = self.aim_angles(a, rng)
             best = None
             wall = None
             for dy, dp in ((0, 0), (7, 0), (-7, 0), (0, 6), (0, -8), (14, -4), (-14, -4)):
-                d = dir_from_angles(a.yaw + dy, a.pitch + dp)
+                d = dir_from_angles(yaw + dy, pitch + dp)
                 hit = self.trace_bullet(eye, d, rng, a.id)
                 if hit["agent"] is not None:
                     if best is None or hit["t"] < best["t"]:
@@ -961,8 +1020,9 @@ class World:
         if spec.kind != "grenade" or ws.mag <= 0:
             return
         ws.mag -= 1
-        pitch = a.pitch + (6.0 if not a.throw_under else 2.0)
-        d = dir_from_angles(a.yaw, pitch)
+        yaw, base_pitch = self.aim_angles(a, 60.0)
+        pitch = base_pitch + (6.0 if not a.throw_under else 2.0)
+        d = dir_from_angles(yaw, pitch)
         speed = spec.throw_speed * (0.42 if a.throw_under else 1.0)
         vel = d * speed + a.vel * 0.6
         vel[2] += 1.2 if not a.throw_under else 0.8
@@ -1097,6 +1157,21 @@ class World:
             f.acc -= 0.2
             self._burn(f)
         self.fires = alive
+
+    def _update_zone(self, dt: float):
+        """Poison zone outside the OBJ edge: slowly drains HP while in the live phase."""
+        if not self.zone or self.mode.phase != "live":
+            return
+        self._zone_acc += dt
+        if self._zone_acc < 0.5:
+            return
+        self._zone_acc -= 0.5
+        cx, cy = self.zone["center"]
+        dmg = float(self.zone.get("dps", 8.0)) * 0.5
+        for v in self.agents:
+            if v.alive and self.outside_zone(v.pos):
+                v.last_damage_dir = np.array([v.pos[0] - cx, v.pos[1] - cy, 0.0])
+                self.apply_damage(v, dmg, None, "zone", 1, None, "zone")
 
     def _burn(self, f: Fire):
         owner = self.agents[f.owner] if 0 <= f.owner < len(self.agents) else None

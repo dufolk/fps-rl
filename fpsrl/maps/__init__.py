@@ -4,19 +4,19 @@ _CACHE = {}
 
 # name -> (zh display, en display)
 MAPS = {
-    "desert2": ("沙漠灰", "Desert 2"),
+    "garage": ("假车库", "Garage"),
 }
 
 
 def _builder(name: str):
-    if name == "desert2":
-        from .desert2 import build
+    if name == "garage":
+        from .garage import build
     else:
         raise KeyError(f"unknown map {name!r}")
     return build
 
 
-def load_map(name: str = "desert2") -> MapData:
+def load_map(name: str = "garage") -> MapData:
     if name not in _CACHE:
         _CACHE[name] = _builder(name)
     return _CACHE[name]()

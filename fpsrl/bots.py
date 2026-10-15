@@ -6,8 +6,6 @@ import math
 import numpy as np
 
 from . import config as C
-from .geometry import point_in_poly, poly_center
-from .mode import ATT
 from .nav import NavGrid
 from .sim import IDLE, Action, Agent, World, angles_to, wrap180
 from .weapons import SLOT_FIRE, SLOT_FLASH, SLOT_FRAG
@@ -17,9 +15,6 @@ DIFFICULTY_LEVELS = {"easy": 0.2, "normal": 0.5, "hard": 0.85, "insane": 1.0}
 
 class Bot:
     """Rule-based player controller. Call `act()` once per simulation tick."""
-
-    # per-round team decisions keyed by (Elimination.round_uid, team): the site attackers push
-    _plans: dict = {}
 
     def __init__(self, world: World, agent_id: int, difficulty: float | str = "normal", seed: int | None = None):
         self.world = world
@@ -67,7 +62,6 @@ class Bot:
         self.grenade_slot = SLOT_FRAG
         self.grenade_until = 0.0
         self.was_alive = False
-        self.task = None
 
     @property
     def agent(self) -> Agent:
@@ -102,19 +96,16 @@ class Bot:
     def _pick_goal(self):
         w = self.world
         a = self.agent
-        goal, task, bias = self._objective()
-        self.task = task if goal is not None else None
+        if w.outside_zone(a.pos):
+            cx, cy = w.zone["center"]
+            n = self.nav.nearest_cell((cx, cy, 0.0))
+            return self.nav.nodes[n] if n >= 0 else np.array([cx, cy, 0.0])
         if self.investigate is not None:
             g, self.investigate = self.investigate, None
-            self.task = None
             return g
         recent = [(t, p) for eid, (t, p) in self.last_seen.items() if w.time - t < 8.0]
-        if recent and self.rng.random() < 0.7 * (1.0 - bias):
-            self.task = None
+        if recent and self.rng.random() < 0.7:
             return max(recent, key=lambda x: x[0])[1]
-        if goal is not None and self.rng.random() < bias:
-            return goal
-        self.task = None
         pts = w.map.strategic_points
         enemy = np.mean([s[:2] for s in w.map.spawns[1 - w.mode.side(a.team)]], axis=0)
         own = np.mean([s[:2] for s in w.map.spawns[w.mode.side(a.team)]], axis=0)
@@ -126,40 +117,6 @@ class Bot:
         x, y = x + self.rng.uniform(-1.5, 1.5), y + self.rng.uniform(-1.0, 1.0)
         n = self.nav.nearest_cell((x, y, a.pos[2]))
         return np.array([x, y, self.nav.nodes[n, 2] if n >= 0 else a.pos[2]])
-
-    # ------------------------------------------------------------------ objectives
-    def _zone_point(self, zone, spread: float = 0.35) -> np.ndarray:
-        poly = np.asarray(zone["poly"], dtype=np.float64)
-        lo, hi = poly.min(0), poly.max(0)
-        for _ in range(6):
-            x, y = (lo + hi) * 0.5 + (hi - lo) * spread * self.rng.uniform(-1.0, 1.0, 2)
-            if point_in_poly(x, y, poly):
-                break
-        else:
-            x, y = poly_center(poly)
-        return np.array([x, y, zone.get("z", zone.get("zmin", -0.5) + 0.5)])
-
-    def _team_site(self, m, team) -> int:
-        key = (m.round_uid, team)
-        if key not in Bot._plans:
-            if len(Bot._plans) > 256:
-                Bot._plans.clear()
-            Bot._plans[key] = int(self.rng.integers(len(m.sites))) if m.sites else -1
-        return Bot._plans[key]
-
-    def _objective(self):
-        """(goal, task, bias): attackers push one site per round, defenders spread over the sites;
-        `bias` is how strongly the bot prefers that over hunting."""
-        m = self.world.mode
-        a = self.agent
-        if m.phase != "live" or not m.sites:
-            return None, None, 0.0
-        if m.side(a.team) == ATT:
-            site = self._team_site(m, a.team)
-            return self._zone_point(m.sites[site], 0.45), "push", 0.8
-        mates = sorted(o.id for o in m.members(a.team))
-        site = mates.index(a.id) % len(m.sites)
-        return self._zone_point(m.sites[site], 0.4), "hold", 0.65
 
     # ------------------------------------------------------------------ main
     def act(self) -> Action:

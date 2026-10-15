@@ -29,7 +29,7 @@ class NavGrid:
 
     def __init__(self, world, cell: float = 0.5, max_floor: float | None = None,
                  clearance: float = C.PLAYER_RADIUS + 0.02):
-        (x0, y0), (x1, y1) = world.map.bounds
+        (x0, y0), (x1, y1) = world.map.nav_bounds or world.map.bounds
         if max_floor is None:
             max_floor = world.map.nav_max_floor
         self.cell = cell
@@ -118,6 +118,34 @@ class NavGrid:
                     return j
             return -1
 
+        def floor_at(x, y, below):
+            """Highest box top at (x, y) that a player at height `below` - step could step onto."""
+            ins = (bmin[:, 0] <= x) & (x <= bmax[:, 0]) & (bmin[:, 1] <= y) & (y <= bmax[:, 1])
+            tops = bmax[ins, 2]
+            tops = tops[tops <= below + step]
+            return float(tops.max()) if len(tops) else None, ins
+
+        def match_stairs(i, cell, zi):
+            """Steep stairs rise more than a step per nav cell although every riser is a legal step:
+            accept a rise of up to two steps when walking the segment in quarters never climbs more
+            than a step at once (so the side face of a flight is not mistaken for its treads)."""
+            for j in cn.get(cell, ()):
+                if not step < abs(zl[j] - zi) <= 2 * step:
+                    continue
+                lo, hi = (i, j) if zl[j] > zi else (j, i)
+                z = zl[lo]
+                ok = True
+                for t in (0.25, 0.5, 0.75):
+                    x, y = self.nodes[lo, :2] + (self.nodes[hi, :2] - self.nodes[lo, :2]) * t
+                    f, ins = floor_at(x, y, z)
+                    if f is None or f < z - step or ((bmin[ins, 2] < f + HEAD_HI) & (bmax[ins, 2] > f + HEAD_LO)).any():
+                        ok = False
+                        break
+                    z = f
+                if ok and zl[hi] - z <= step:
+                    return j
+            return -1
+
         for i, cell in enumerate(self.node_cell.tolist()):
             r, c = divmod(cell, W)
             zi = zl[i]
@@ -127,6 +155,8 @@ class NavGrid:
                 if not (0 <= rr < H and 0 <= cc < W):
                     continue
                 j = match(rr * W + cc, zi)
+                if j < 0 and not (dr and dc):
+                    j = match_stairs(i, rr * W + cc, zi)
                 if j >= 0:
                     if dr and dc:
                         s1, s2 = match(r * W + cc, zi), match(rr * W + c, zi)

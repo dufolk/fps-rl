@@ -370,7 +370,111 @@ def reinforce(size=256):
     return col, normal_from_height(height, 2.0)
 
 
+def stains(h, w, amount=0.5, seed=5):
+    """Dark blotches (oil, water marks) as a 0..1 mask."""
+    rng = np.random.default_rng(seed)
+    return np.clip((noise(h, w, 3, 5, rng=rng) - 0.62) * 3.5, 0, 1) * amount
+
+
+def yard(size=512):
+    """Weathered concrete pad: 4 m slabs (uv scale 0.25) with saw cuts, cracks and stains."""
+    h = w = size
+    n1 = noise(h, w, 8, 6, 0.6)
+    n2 = noise(h, w, 64, 2)
+    col = np.array([0.56, 0.55, 0.52])[None, None, :] * (0.84 + 0.2 * n1[..., None]) * (0.93 + 0.1 * n2[..., None])
+    st = stains(h, w, 0.45)
+    col *= (1 - st[..., None] * 0.55)
+    yy, xx = np.mgrid[0:h, 0:w]
+    joint = ((xx % (w // 2)) < 2) | ((yy % (h // 2)) < 2)
+    col[joint] *= 0.55
+    crack_n = noise(h, w, 4, 4, rng=np.random.default_rng(9))
+    crack = (np.abs(crack_n - 0.5) < 0.004) & (noise(h, w, 3, 3, rng=np.random.default_rng(4)) > 0.55)
+    col[crack] *= 0.72
+    height = n1 * 0.25 + n2 * 0.15
+    height[joint | crack] = 0.0
+    return col, normal_from_height(height, 1.6)
+
+
+def stucco(base, size=512):
+    """Painted render for big facades (2 m per tile): fine grain, soft water streaks, no chips."""
+    h = w = size
+    n1 = noise(h, w, 6, 6, 0.55)
+    grain = noise(h, w, 128, 1)
+    st = noise(h, w, 3, 4, aspect=(4, 0.5), rng=np.random.default_rng(17))
+    col = np.asarray(base)[None, None, :] * (0.92 + 0.1 * n1[..., None]) * (0.96 + 0.06 * grain[..., None])
+    streak = np.clip((st - 0.55) * 2.0, 0, 1) * 0.18
+    col *= (1 - streak[..., None])
+    return col, normal_from_height(grain * 0.3 + n1 * 0.1, 0.8)
+
+
+def gravel(size=256, base=(0.5, 0.46, 0.4)):
+    h = w = size
+    rng = np.random.default_rng(21)
+    g = rng.random((h, w))
+    n1 = noise(h, w, 6, 5)
+    stones = noise(h, w, 48, 2, rng=rng)
+    col = np.asarray(base)[None, None, :] * (0.7 + 0.35 * stones[..., None]) * (0.85 + 0.2 * n1[..., None])
+    col += (g > 0.93)[..., None] * 0.08
+    col -= (g < 0.05)[..., None] * 0.08
+    return col, normal_from_height(stones * 0.7 + n1 * 0.2, 3.0)
+
+
+def tar_roof(size=256):
+    """Flat bitumen roof sprinkled with ballast; 4 m per tile."""
+    h = w = size
+    rng = np.random.default_rng(31)
+    g = rng.random((h, w))
+    n1 = noise(h, w, 6, 5)
+    col = np.array([0.24, 0.24, 0.25])[None, None, :] * (0.8 + 0.35 * n1[..., None])
+    col += (g > 0.9)[..., None] * np.array([0.18, 0.17, 0.15]) * rng.random((h, w, 1))
+    yy = np.arange(h)[:, None] % (h // 4)
+    col[(yy < 2).repeat(w, axis=1)] *= 0.7  # felt laps every metre
+    return col, normal_from_height(n1 * 0.3 + (g > 0.9) * 0.4, 1.5)
+
+
+def bark(size=256):
+    h = w = size
+    st = noise(h, w, 2, 5, aspect=(0.3, 8))
+    n1 = noise(h, w, 8, 4)
+    ridges = np.clip(np.abs(st - 0.5) * 3.0, 0, 1)
+    col = np.array([0.33, 0.29, 0.25])[None, None, :] * (0.6 + 0.45 * ridges[..., None]) * (0.85 + 0.2 * n1[..., None])
+    return col, normal_from_height(ridges * 0.8 + n1 * 0.2, 3.0)
+
+
+def car_paint(base, size=128):
+    col, nrm = painted(base, size, rust_amount=0.08)
+    yy = np.arange(size)[:, None] / size
+    col = col * (0.85 + 0.3 * yy[..., None])  # soft sky reflection gradient
+    return col, nrm
+
+
+def garage_floor(size=512):
+    col, nrm = yard(size)
+    col = col * 0.82
+    h = w = size
+    oil = stains(h, w, 0.7, seed=12)
+    col *= (1 - oil[..., None] * 0.6)
+    xx = np.mgrid[0:h, 0:w][1]
+    line = np.abs(xx - w // 2) < 3  # painted bay line every 4 m
+    col[line] = col[line] * 0.3 + np.array([0.75, 0.62, 0.15]) * 0.7
+    return col, nrm
+
+
 THEME_TEXTURES = {
+    "yard": lambda: yard(),
+    "stucco_white": lambda: stucco((0.84, 0.84, 0.8)),
+    "stucco_tan": lambda: stucco((0.78, 0.68, 0.5)),
+    "gravel": lambda: gravel(),
+    "roof_flat": lambda: tar_roof(),
+    "roof_metal": lambda: container((0.52, 0.55, 0.56)),
+    "cinder": lambda: blocks((0.6, 0.6, 0.58), rows=10, cols=5, mortar=(0.48, 0.48, 0.46), jitter=0.06,
+                             mortar_px=2),
+    "garage_floor": lambda: garage_floor(),
+    "bark": lambda: bark(),
+    "car_white": lambda: car_paint((0.82, 0.83, 0.84)),
+    "car_red": lambda: car_paint((0.55, 0.08, 0.07)),
+    "car_blue": lambda: car_paint((0.12, 0.22, 0.45)),
+    "car_green": lambda: car_paint((0.2, 0.33, 0.22)),
     "sand": lambda: sand(),
     "sand_dark": lambda: sand(base=(0.66, 0.54, 0.37)),
     "sandstone": lambda: blocks((0.76, 0.62, 0.42), rows=6, cols=3, mortar=(0.62, 0.52, 0.38)),

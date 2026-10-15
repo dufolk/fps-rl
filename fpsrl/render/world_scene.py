@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 from panda3d.core import (AmbientLight, BitMask32, CompassEffect, CullFaceAttrib, DirectionalLight, Fog,
-                          RenderState, TextNode, TextureStage, TransparencyAttrib, Vec3, Vec4)
+                          RenderState, TextureStage, TransparencyAttrib, Vec3, Vec4)
 
 from ..maps import MapData
 from . import models as M
@@ -21,9 +21,8 @@ UV_SCALE = {"sand": 0.15, "sand_dark": 0.15, "sandstone": 0.4, "sandstone_dark":
 SURFACE_FOR = {"steel_plate": "metal", "crate": "wood", "crate_big": "wood", "sand": "cloth", "sand_dark": "cloth",
                "sandstone": "cloth", "sandstone_dark": "cloth", "brick": "cloth", "brick_dark": "cloth",
                "wood_planks": "wood", "metal": "metal", "metal_dark": "metal"}
-THEME = dict(horizon=(0.92, 0.82, 0.66), zenith=(0.3, 0.52, 0.8), fog=0.0032, sun=(1.5, 1.3, 1.0),
-             amb=(0.46, 0.42, 0.4), ground="sand_dark")
-SITE_COLORS = [(0.95, 0.25, 0.15, 1), (0.2, 0.55, 0.95, 1), (0.95, 0.8, 0.2, 1), (0.3, 0.85, 0.35, 1)]
+THEME = dict(horizon=(0.78, 0.82, 0.84), zenith=(0.32, 0.5, 0.74), fog=0.0045, sun=(1.45, 1.35, 1.15),
+             amb=(0.44, 0.45, 0.48), ground="grass", hills=(0.36, 0.42, 0.32), blocks=(0.55, 0.55, 0.52))
 
 
 class WorldScene:
@@ -41,21 +40,13 @@ class WorldScene:
         self.extent = max(x1 - x0, y1 - y0)
         self._build_lights(shadows, shadow_size)
         self._build_sky()
-        # An imported map sealed by its BSP sky shell shows sky past its edges and through floor gaps,
-        # so the procedural ground and backdrop are left out.
-        sealed = False
-        if game_map.mesh:
-            from .map_mesh import has_sky_shell
-            sealed = has_sky_shell(game_map.mesh)
-        if not sealed:
-            self._build_ground()
+        self._build_ground()
         self._build_map()
         if game_map.mesh:
             from .map_mesh import build as build_mesh
-            build_mesh(self.root, game_map.mesh, self.ts_normal)
-        if not sealed:
-            self._build_distant_land()
-        self._build_sites()
+            build_mesh(self.root, game_map.mesh, self.ts_normal, self.tex)
+        self._build_distant_land()
+        self._build_zone()
         fog = Fog("fog")
         fog.setColor(*self.theme["horizon"])
         fog.setExpDensity(self.theme["fog"])
@@ -75,7 +66,8 @@ class WorldScene:
             sun.setCameraMask(SHADOW_MASK)
             sun.setInitialState(RenderState.make(CullFaceAttrib.makeReverse()))
             lens = sun.getLens()
-            film = max(118.0, self.extent * 1.25)
+            (sx0, sy0), (sx1, sy1) = self.map.nav_bounds or self.map.bounds
+            film = max(118.0, max(sx1 - sx0, sy1 - sy0) * 1.25)
             lens.setFilmSize(film, film)
             lens.setNearFar(10, 130 + film)
         self.sun_np = self.base.render.attachNewNode(sun)
@@ -182,7 +174,7 @@ class WorldScene:
         mb = MeshBuilder("ground_far")
         R = 900.0
         cx, cy = self.center.x, self.center.y
-        z = -0.03
+        z = self.map.ground_z
         mb.quad((cx - R, cy - R, z), (cx + R, cy - R, z), (cx + R, cy + R, z), (cx - R, cy + R, z),
                 uv_mode="world", uv_scale=UV_SCALE.get(mat, 0.2))
         node = mb.node()
@@ -196,60 +188,82 @@ class WorldScene:
         rng = np.random.default_rng(11)
         mb = MeshBuilder("distant")
         cx, cy = self.center.x, self.center.y
-        r0 = self.extent * 0.75 + 30
+        z0 = self.map.ground_z
+        r0 = self.extent * 0.75 + 60
+        hills, blocks = (*self.theme["hills"], 1), (*self.theme["blocks"], 1)
         for k in range(36):
             a = k / 36 * math.tau + rng.uniform(-0.05, 0.05)
             r = r0 + rng.uniform(110, 220)
             h = rng.uniform(10, 34)
             rad = rng.uniform(40, 70)
-            mb.sphere((cx + math.cos(a) * r, cy + math.sin(a) * r, -h * 0.4), rad,
-                      (0.62, 0.5, 0.36, 1), 6, 10, scale=(1.0, 1.0, h / rad))
+            mb.sphere((cx + math.cos(a) * r, cy + math.sin(a) * r, z0 - h * 0.4), rad, hills, 6, 10,
+                      scale=(1.0, 1.0, h / rad))
         for k in range(14):
             a = rng.uniform(0, math.tau)
             r = r0 + rng.uniform(5, 40)
             x, y = cx + math.cos(a) * r, cy + math.sin(a) * r
             w, d, h = rng.uniform(6, 14), rng.uniform(6, 14), rng.uniform(4, 10)
-            mb.box((x, y, 0), (x + w, y + d, h), (0.78, 0.66, 0.48, 1))
+            mb.box((x, y, z0), (x + w, y + d, z0 + h), blocks)
         node = mb.node()
         node.reparentTo(self.root)
         node.setMaterial(M.make_material("paint"), 1)
         node.hide(SHADOW_MASK)
 
-    def _build_sites(self):
-        """Painted outlines + letters of the map's sites (landmarks only in elimination)."""
-        for i, z in enumerate((self.map.objectives or {}).get("sites", [])):
-            poly = z["poly"]
-            gz = z.get("z", z.get("zmin", 0.0)) + 0.02
-            color = SITE_COLORS[i % len(SITE_COLORS)]
-            mb = MeshBuilder(f"site_{i}")
-            n = len(poly)
-            w = 0.12
-            for k in range(n):
-                (ax, ay), (bx, by) = poly[k], poly[(k + 1) % n]
-                dx, dy = bx - ax, by - ay
-                L = math.hypot(dx, dy) or 1.0
-                nx, ny = -dy / L * w, dx / L * w
-                mb.quad((ax - nx, ay - ny, gz), (bx - nx, by - ny, gz), (bx + nx, by + ny, gz),
-                        (ax + nx, ay + ny, gz), color=color)
-            node = mb.node()
-            node.reparentTo(self.root)
-            node.setLightOff(1)
-            node.setShaderOff(1)
-            node.setDepthOffset(2)
-            node.hide(SHADOW_MASK)
-            tn = TextNode(f"site_label_{i}")
-            tn.setText(z.get("name", "?"))
-            tn.setAlign(TextNode.ACenter)
-            tn.setTextColor(*color[:3], 0.85)
-            t = self.root.attachNewNode(tn)
-            t.setPos(sum(p[0] for p in poly) / n, sum(p[1] for p in poly) / n - 0.6, gz + 0.01)
-            t.setP(-90)
-            t.setScale(2.4)
-            t.setLightOff(1)
-            t.setShaderOff(1)
-            t.setDepthOffset(2)
-            t.setTransparency(TransparencyAttrib.M_alpha)
-            t.hide(SHADOW_MASK)
+    def _build_zone(self):
+        """Glowing circular poison-zone boundary (毒圈) along the OBJ outer edge."""
+        zone = (self.map.objectives or {}).get("zone")
+        if not zone:
+            return
+        cx, cy = zone["center"]
+        r = float(zone["radius"])
+        low = [b for b in self.map.boxes if b.solid and b.mx[2] < 4.0]
+        bmn = np.array([b.mn for b in low], dtype=np.float64).reshape(-1, 3)
+        bmx = np.array([b.mx for b in low], dtype=np.float64).reshape(-1, 3)
+        n = 96
+        pts = []
+        for k in range(n):
+            a = k / n * math.tau
+            x, y = cx + math.cos(a) * r, cy + math.sin(a) * r
+            ins = (bmn[:, 0] <= x) & (x <= bmx[:, 0]) & (bmn[:, 1] <= y) & (y <= bmx[:, 1])
+            z = float(bmx[ins, 2].max()) if ins.any() else 0.0
+            pts.append((x, y, z))
+        line = MeshBuilder("zone_line")
+        wall = MeshBuilder("zone_wall")
+        w, h = 0.32, 10.0
+        for k in range(n):
+            ax, ay, az = pts[k]
+            bx, by, bz = pts[(k + 1) % n]
+            dx, dy = bx - ax, by - ay
+            L = math.hypot(dx, dy) or 1.0
+            nx, ny = -dy / L * w, dx / L * w
+            line.quad((ax - nx, ay - ny, az + 0.04), (bx - nx, by - ny, bz + 0.04),
+                      (bx + nx, by + ny, bz + 0.04), (ax + nx, ay + ny, az + 0.04),
+                      color=(0.1, 0.85, 1.0, 0.95))
+            wall.quad((ax, ay, az), (bx, by, bz), (bx, by, bz + h), (ax, ay, az + h),
+                      color=(0.12, 0.48, 1.0, 0.34))
+            for zh in (2.5, 5.0, 7.5, h):
+                wall.quad((ax, ay, az + zh - 0.08), (bx, by, bz + zh - 0.08),
+                          (bx, by, bz + zh + 0.08), (ax, ay, az + zh + 0.08),
+                          color=(0.2, 0.88, 1.0, 0.78))
+            mx, my = ax + dx * 0.06, ay + dy * 0.06
+            wall.quad((ax, ay, az), (mx, my, az), (mx, my, az + h), (ax, ay, az + h),
+                      color=(0.2, 0.88, 1.0, 0.65))
+        ln = line.node()
+        ln.reparentTo(self.root)
+        ln.setLightOff(1)
+        ln.setShaderOff(1)
+        ln.setDepthOffset(2)
+        ln.setTransparency(TransparencyAttrib.M_alpha)
+        ln.hide(SHADOW_MASK)
+        wn = wall.node()
+        wn.reparentTo(self.root)
+        wn.setTwoSided(True)
+        wn.setLightOff(1)
+        wn.setShaderOff(1)
+        wn.setTransparency(TransparencyAttrib.M_alpha)
+        wn.setDepthWrite(False)
+        wn.setBin("transparent", 10)
+        wn.hide(SHADOW_MASK)
 
     def destroy(self):
         r = self.base.render
