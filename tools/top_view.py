@@ -1,4 +1,4 @@
-"""Top-down collision map of a map with spawns, sites and buy zones drawn on.
+"""Top-down collision map of a map with spawns and sites drawn on.
 
     py tools/top_view.py <map> [out.png]
 
@@ -72,9 +72,6 @@ def main():
         dr.polygon(pts, outline=(255, 60, 60))
         cx, cy = np.mean(pts, axis=0)
         dr.text((cx, cy), zone["name"], fill=(255, 255, 255))
-    for side, polys in m.buy_zones.items():
-        for poly in polys:
-            dr.polygon([px(*p) for p in poly], outline=(255, 200, 40) if side == 0 else (60, 200, 255))
     for team, pts in m.spawns.items():
         col = (255, 150, 60) if team == 0 else (90, 170, 255)
         for p in pts:

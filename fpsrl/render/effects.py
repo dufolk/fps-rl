@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import random
 
-from panda3d.core import (ColorBlendAttrib, NodePath, PointLight, Point3, TransparencyAttrib, Vec3,
+from panda3d.core import (ColorBlendAttrib, PointLight, Point3, TransparencyAttrib, Vec3,
                           Vec4)
 
 from .meshes import MeshBuilder
@@ -284,9 +284,7 @@ class Effects:
     def impact(self, point, normal, mat):
         p = Point3(*point)
         n = Vec3(*normal)
-        metal = mat is not None and (mat.startswith("container") or mat in ("steel_plate", "deck", "hull",
-                                                                          "bulwark", "parapet", "mast",
-                                                                          "superstructure", "hatch"))
+        metal = mat is not None and (mat.startswith("metal") or mat == "steel_plate")
         if metal:
             for _ in range(random.randint(5, 9)):
                 v = (n * random.uniform(1.5, 4.0) + Vec3(random.uniform(-2, 2), random.uniform(-2, 2),
@@ -336,19 +334,6 @@ class Effects:
                            random.uniform(1.0, 1.6), random.uniform(3.5, 5.5), (0.22, 0.2, 0.18, 0.75),
                            (0.35, 0.33, 0.3, 0.0), grav=-0.5, drag=1.8)
         self.scorches.place(Point3(p.x, p.y, p.z - 0.05), Vec3(0, 0, 1))
-
-    def debris(self, pos, mat=""):
-        """Breaking wall panel: chunks + dust cloud."""
-        p = Point3(*pos)
-        wood = "wood" in (mat or "")
-        chunk = (0.45, 0.32, 0.18) if wood else (0.75, 0.72, 0.66)
-        for _ in range(10):
-            v = Vec3(random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(0.0, 1.0)) * random.uniform(2, 5)
-            self.sparks.emit(p, v, random.uniform(0.5, 1.0), 0.07, 0.05, (*chunk, 1), (*chunk, 0.6), grav=12.0)
-        for _ in range(8):
-            v = Vec3(random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(-0.2, 0.6))
-            self.dust.emit(p, v * random.uniform(0.4, 1.4), random.uniform(1.2, 2.2), 0.4, random.uniform(1.0, 1.6),
-                           (*chunk, 0.6), (*chunk, 0.0), grav=-0.2, drag=2.0)
 
     def flashbang(self, pos):
         p = Point3(*pos)

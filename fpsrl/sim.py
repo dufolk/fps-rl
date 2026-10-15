@@ -2,6 +2,7 @@
 
 This is the single source of truth for gameplay. The Panda3D client, scripted
 bots and the RL environments all drive the same `World.step(actions)`.
+The only game mode is elimination (`fpsrl.mode.Elimination`).
 """
 from __future__ import annotations
 
@@ -14,8 +15,8 @@ import numpy as np
 from . import config as C
 from .geometry import aabb_overlap_mask, raycast_boxes, segments_blocked, segments_hit_spheres
 from .maps import load_map
-from .weapons import (LOADOUT_BY_KEY, MELEE, SECONDARY, SLOT_FIRE, SLOT_FLASH, SLOT_FRAG, SLOT_MELEE,
-                      SLOT_PISTOL, SLOT_PRIMARY, SLOT_SMOKE, WEAPONS)
+from .weapons import (GRENADES, LOADOUT_BY_KEY, LOADOUT_KEYS, MELEE, SLOT_MELEE, SLOT_PISTOL, SLOT_PRIMARY,
+                      WEAPONS, random_loadout)
 
 TEAM_NAMES = ("BL", "GR")
 LEAN_DIST = 0.38
@@ -29,8 +30,7 @@ class Action:
 
     move_*: [-1, 1]; look_*: degrees to add this tick (yaw positive = turn left,
     pitch positive = look up); buttons are "held" states; switch: 0 keeps the
-    current weapon, 1..7 selects a slot; lean: -1 left, 0, +1 right; use: plant /
-    defuse / reinforce / barricade (hold); gadget: toggle drone / camera view.
+    current weapon, 1..7 selects a slot; lean: -1 left, 0, +1 right.
     """
     move_forward: float = 0.0
     move_right: float = 0.0
@@ -44,8 +44,6 @@ class Action:
     reload: bool = False
     switch: int = 0
     lean: int = 0
-    use: bool = False
-    gadget: bool = False
 
 
 IDLE = Action()
@@ -58,17 +56,14 @@ def _crouch_only(act: Action) -> Action:
 @dataclass
 class MatchConfig:
     team_size: int = 4
-    map_name: str = "transport_ship"
-    mode: str = "tdm"  # tdm | dom | bomb | r6
+    map_name: str = "desert2"
     tick_rate: int = C.TICK_RATE
-    kill_limit: int = 60
-    time_limit: float = 420.0
     friendly_fire: bool = False
-    respawn: bool = True
-    respawn_time: float = C.RESPAWN_TIME
-    primaries: list | None = None  # per-agent primary weapon, default all "ak47"
+    # per-agent loadout key ("rifle" | "sniper" | "shotgun"); missing / None / "random" = random
+    # draw at match reset
+    loadouts: list | None = None
     seed: int | None = None
-    mode_params: dict = field(default_factory=dict)  # overrides of the mode's tunables (see fpsrl.modes)
+    mode_params: dict = field(default_factory=dict)  # overrides of Elimination.DEFAULTS
 
 
 def dir_from_angles(yaw: float, pitch: float) -> np.ndarray:
@@ -102,14 +97,17 @@ class WeaponState:
         return WEAPONS[self.name]
 
 
-_BARE_HANDS = WeaponState(MELEE)  # placeholder while an agent holds nothing (dead between rounds)
+_BARE_HANDS = WeaponState(MELEE)  # placeholder while an agent holds nothing
+
 
 class Agent:
-    def __init__(self, aid: int, team: int, name: str, primary: str = "ak47"):
+    def __init__(self, aid: int, team: int, name: str, loadout: str | None = None):
         self.id = aid
         self.team = team
         self.name = name
-        self.primary = primary
+        self.loadout_pref = loadout  # configured key, None / "random" = draw at match reset
+        self.loadout = loadout if loadout in LOADOUT_BY_KEY else LOADOUT_KEYS[0]
+        self.next_loadout = None  # requested switch, applied at the next spawn
         self.pos = np.zeros(3)
         self.prev_pos = np.zeros(3)
         self.vel = np.zeros(3)
@@ -121,9 +119,7 @@ class Agent:
         self.on_ground = False
         self.hp = float(C.MAX_HP)
         self.alive = False
-        self.respawn_at = 0.0
         self.spawn_time = 0.0
-        self.protect_until = 0.0
         self.death_time = -100.0
         self.killer = -1
         self.inv: dict[int, WeaponState] = {}
@@ -154,25 +150,15 @@ class Agent:
         self.last_damage_time = -100.0
         self.last_attacker = -1
         self.last_damage_dir = np.zeros(3)
-        # lean / objective / R6 state
         self.lean = 0.0  # smoothed lean input, -1..1
         self.lean_off = 0.0  # actual sideways head offset in metres (clamped by walls), + = right
-        self.loadout = {"primary": primary, "secondary": SECONDARY}
-        self.money = 0
-        self.armor = 0.0  # fraction of damage absorbed
-        self.helmet = False
-        self.frozen = False  # freeze time / R6 attacker prep: can look, cannot move or shoot
-        self.role = "human"  # bio: human / mother / zombie
-        self.speed_mult = 1.0
-        self.knock_until = 0.0  # bio: ground friction is reduced while a shove plays out
-        self.busy: tuple | None = None  # (kind, start, duration, data) of a hold action (plant, defuse ...)
+        self.frozen = False  # freeze time: can look, cannot move or shoot
         self.flash_until = 0.0
         self.flash_t0 = 0.0
-        self.view_mode = 0  # 0 body, 1 drone, 2 camera
-        self.view_ref = -1  # drone / camera id while view_mode != 0
-        self.operator = ""
-        self.spotted_until = 0.0
-        self.prev_use = self.prev_gadget = False
+
+    @property
+    def primary(self) -> str:
+        return LOADOUT_BY_KEY[self.loadout][3]
 
     # convenient accessors -------------------------------------------------------
     def right(self) -> np.ndarray:
@@ -264,40 +250,12 @@ class Fire:
 
 class World:
     def __init__(self, cfg: MatchConfig | None = None):
-        from .destruction import Destruction
-        from .gadgets import Gadgets
-        from .modes import make_mode
+        from .mode import Elimination
         self.cfg = cfg or MatchConfig()
         self.map = load_map(self.cfg.map_name)
         self.dt = 1.0 / self.cfg.tick_rate
-        self.destruct = Destruction(self)
-        self.gadgets = Gadgets(self)
-        self.static_boxes = [b for b in self.map.boxes if b.solid and not b.params.get("destruct")]
-        self.geo_version = 0
-        self._rebuild_geometry()
-
-        n = self.cfg.team_size
-        prim = list(self.cfg.primaries or [])
-        self.agents: list[Agent] = []
-        for team in (0, 1):
-            for i in range(n):
-                aid = team * n + i
-                primary = prim[aid] if aid < len(prim) else "ak47"
-                self.agents.append(Agent(aid, team, f"{TEAM_NAMES[team]}-{i}", primary))
-        self.event_log: deque = deque(maxlen=4096)
-        self.noises: deque = deque(maxlen=128)
-        self.muted = False  # drop events (client-side prediction replays)
-        self.lag_comp = False  # record hitbox history so shots can be rewound (network host)
-        self.rewind: dict[int, float] = {}  # shooter id -> world time the shooter was seeing
-        self._hist: deque = deque(maxlen=40)
-        self.mode = make_mode(self)
-        self.reset(self.cfg.seed)
-
-    # ------------------------------------------------------------------ geometry
-    def _rebuild_geometry(self):
-        boxes = self.static_boxes + self.destruct.active_boxes() + self.gadgets.boxes()
-        solid = [b for b in boxes if b.solid]
-        self.solid_boxes = solid
+        self.static_boxes = [b for b in self.map.boxes if b.solid]
+        solid = self.static_boxes
         self.smin = np.array([b.mn for b in solid], dtype=np.float64).reshape(-1, 3)
         self.smax = np.array([b.mx for b in solid], dtype=np.float64).reshape(-1, 3)
         bullet = [b for b in solid if b.blocks_bullets]
@@ -306,12 +264,18 @@ class World:
         self.bmax = np.array([b.mx for b in bullet], dtype=np.float64).reshape(-1, 3)
         big = np.argsort(-np.prod(self.bmax - self.bmin, axis=1), kind="stable")
         self.los_min, self.los_max = self.bmin[big], self.bmax[big]
-        self.geo_version += 1
-        self._vis_tick = -1
 
-    def geometry_changed(self):
-        """Called by destruction / gadgets after solid boxes appeared or disappeared."""
-        self._rebuild_geometry()
+        n = self.cfg.team_size
+        lo = list(self.cfg.loadouts or [])
+        self.agents: list[Agent] = []
+        for team in (0, 1):
+            for i in range(n):
+                aid = team * n + i
+                self.agents.append(Agent(aid, team, f"{TEAM_NAMES[team]}-{i}", lo[aid] if aid < len(lo) else None))
+        self.event_log: deque = deque(maxlen=4096)
+        self.noises: deque = deque(maxlen=128)
+        self.mode = Elimination(self)
+        self.reset(self.cfg.seed)
 
     # ------------------------------------------------------------------ lifecycle
     def reset(self, seed: int | None = None):
@@ -332,42 +296,28 @@ class World:
         self.tick_events: list[dict] = []
         self.event_log.clear()
         self.noises.clear()
-        self._hist.clear()
-        self.destruct.reset()
-        self.gadgets.reset()
-        self._rebuild_geometry()
         for a in self.agents:
             a.kills = a.deaths = a.headshots = 0
             a.damage_dealt = 0.0
             a.last_damage_time = a.last_shot = a.death_time = -100.0
             a.last_attacker = -1
             a.last_damage_dir[:] = 0.0
-            a.next_jump = a.respawn_at = a.step_dist = 0.0
-            a.prev_fire = a.prev_alt = a.prev_reload = a.prev_use = a.prev_gadget = False
-            a.money = 0
+            a.next_jump = a.step_dist = 0.0
+            a.prev_fire = a.prev_alt = a.prev_reload = False
             a.inv = {}
             a.alive = False
+            a.next_loadout = None
+            a.loadout = a.loadout_pref if a.loadout_pref in LOADOUT_BY_KEY else random_loadout(self.rng)
         self.mode.reset()
         return self
 
     def clear_round(self):
-        """Remove transient objects between rounds (projectiles, smoke, fire, gadgets, damage to walls)."""
+        """Remove transient objects between rounds (projectiles, smoke, fire)."""
         self.projectiles = []
         self.smokes = []
         self.fires = []
         self.pending_melee = []
         self.noises.clear()
-        self._hist.clear()
-        self.rewind.clear()
-        self.destruct.reset()
-        self.gadgets.reset()
-        self._rebuild_geometry()
-
-    def spawn_side(self, side_spawns: list, members: list, keep_inventory=False):
-        """Place `members` on distinct points of `side_spawns` (random order)."""
-        order = self.rng.permutation(len(side_spawns))
-        for k, a in enumerate(members):
-            self._spawn_at(a, side_spawns[order[k % len(side_spawns)]], keep_inventory)
 
     @property
     def score(self) -> list:
@@ -378,8 +328,6 @@ class World:
         return self._next_id
 
     def _emit(self, etype: str, **kw) -> dict:
-        if self.muted:
-            return {"type": etype, **kw}
         self.seq += 1
         e = {"type": etype, "t": self.time, "seq": self.seq, **kw}
         self.tick_events.append(e)
@@ -389,53 +337,30 @@ class World:
     def events_since(self, seq: int):
         return [e for e in self.event_log if e["seq"] > seq]
 
-    # ------------------------------------------------------------------ spawning
-    def default_loadout(self, a: Agent):
-        a.inv = {SLOT_PRIMARY: WeaponState(a.loadout.get("primary") or a.primary),
-                 SLOT_PISTOL: WeaponState(a.loadout.get("secondary") or SECONDARY),
-                 SLOT_MELEE: WeaponState(MELEE), SLOT_FRAG: WeaponState("frag"),
-                 SLOT_SMOKE: WeaponState("smoke"), SLOT_FLASH: WeaponState("flash"),
-                 SLOT_FIRE: WeaponState("molotov")}
+    # ------------------------------------------------------------------ loadouts
+    def give_loadout(self, a: Agent):
+        _key, _zh, _en, primary, secondary = LOADOUT_BY_KEY[a.loadout]
+        a.inv = {SLOT_PRIMARY: WeaponState(primary), SLOT_PISTOL: WeaponState(secondary),
+                 SLOT_MELEE: WeaponState(MELEE)}
+        for g in GRENADES:
+            a.inv[WEAPONS[g].slot] = WeaponState(g)
 
-    def give(self, a: Agent, name: str, select: bool = False):
-        """Put weapon `name` into its slot, replacing what was there."""
-        spec = WEAPONS[name]
-        a.inv[spec.slot] = WeaponState(name)
-        if spec.slot == SLOT_PRIMARY:
-            a.primary = name
-        if a.slot == spec.slot:
-            a.ready_at = self.time + spec.draw_time
-            a.reload_until = 0.0
-            a.ads = False
-            self._emit("switch", agent=a.id, slot=spec.slot, weapon=name)
-        elif select:
-            self.switch_weapon(a, spec.slot)
-
-    def buy(self, a: Agent, name: str) -> bool:
-        if not a.alive:
+    def set_loadout(self, a: Agent, key: str) -> bool:
+        """Pick one of the fixed `LOADOUTS`. Applied right away during freeze time, otherwise at the
+        next round start. Returns True when the weapons were swapped right away."""
+        if key not in LOADOUT_BY_KEY:
             return False
-        if name not in WEAPONS or name in getattr(self.mode, "SPECIAL_ITEMS", ()):
-            buy_special = getattr(self.mode, "buy_special", None)
-            return bool(buy_special is not None and buy_special(a, name))
-        price = self.mode.buy_price(a, name)
-        if price is None or a.money < price:
-            return False
-        a.money -= price
-        spec = WEAPONS[name]
-        current = a.inv.get(spec.slot)
-        if spec.kind == "grenade" and current is not None and current.name == name:
-            current.mag += 1
-            self._emit("buy", agent=a.id, weapon=name, price=price)
+        a.loadout_pref = key
+        if a.alive and self.mode.phase == "freeze":
+            a.loadout = key
+            a.next_loadout = None
+            self.give_loadout(a)
+            self.switch_weapon(a, SLOT_PRIMARY, force=True)
             return True
-        if spec.slot == SLOT_PRIMARY:
-            a.loadout["primary"] = name
-        elif spec.slot == SLOT_PISTOL:
-            a.loadout["secondary"] = name
-        self.give(a, name, select=spec.kind == "gun")
-        self._emit("buy", agent=a.id, weapon=name, price=price)
-        return True
+        a.next_loadout = key
+        return False
 
-    def _spawn_at(self, a: Agent, spawn, keep_inventory: bool = False):
+    def _spawn_at(self, a: Agent, spawn):
         x, y, z, yaw = spawn
         a.pos[:] = (x, y, z + 0.01)
         a.prev_pos[:] = a.pos
@@ -448,21 +373,13 @@ class World:
         a.hp = float(C.MAX_HP)
         a.alive = True
         a.spawn_time = self.time
-        a.protect_until = self.time + self.mode.spawn_protect
         a.lean = a.lean_off = 0.0
-        a.busy = None
         a.flash_until = 0.0
-        a.view_mode, a.view_ref = 0, -1
-        a.role = "human"
-        a.speed_mult = 1.0
-        a.knock_until = 0.0
-        if not keep_inventory:
-            a.armor = 0.0
-            a.helmet = False
-        if not keep_inventory or not a.inv:
-            self.mode.give_loadout(a)
-        a.slot = SLOT_PRIMARY if SLOT_PRIMARY in a.inv else SLOT_PISTOL
-        a.last_slot = SLOT_PISTOL if a.slot == SLOT_PRIMARY else SLOT_MELEE
+        if a.next_loadout is not None:
+            a.loadout, a.next_loadout = a.next_loadout, None
+        self.give_loadout(a)
+        a.slot = SLOT_PRIMARY
+        a.last_slot = SLOT_PISTOL
         a.ready_at = self.time + a.spec.draw_time * 0.5
         a.next_fire = 0.0
         a.reload_until = 0.0
@@ -477,24 +394,6 @@ class World:
         a.switch_back_at = -1.0
         a.killer = -1
         self._emit("spawn", agent=a.id, pos=a.pos.tolist())
-
-    def _respawn(self, a: Agent):
-        spawns = self.mode.spawn_points(a)
-        enemies = [e.pos for e in self.agents if e.alive and e.team != a.team]
-        others = [o.pos for o in self.agents if o.alive and o.id != a.id]
-        best, best_score = spawns[0], -1e9
-        for s in spawns:
-            p = np.array(s[:3])
-            if any(np.linalg.norm(p[:2] - o[:2]) < 0.9 for o in others):
-                continue
-            d_enemy = min((np.linalg.norm(p - e) for e in enemies), default=100.0)
-            score = min(d_enemy, 40.0) + self.rng.uniform(0.0, 6.0)
-            if score > best_score:
-                best, best_score = s, score
-        self._spawn_at(a, best)
-        extra = getattr(self.mode, "respawn_protect", 0.0)
-        if extra:
-            a.protect_until = self.time + extra
 
     # ------------------------------------------------------------------ main step
     def step(self, actions: dict | None = None) -> list[dict]:
@@ -514,103 +413,32 @@ class World:
         self._update_melee()
         self._update_projectiles(dt)
         self._update_fires(dt)
-        self.gadgets.update(dt)
         self.smokes = [s for s in self.smokes if self.time < s.t1]
         self.time += dt
         self.tick += 1
-        if self.lag_comp:
-            self._hist.append((self.time, np.stack([a.pos for a in self.agents]),
-                               np.array([a.height for a in self.agents]),
-                               np.stack([a.lean_vec() for a in self.agents])))
         self.mode.post_step(dt)
         if self.done:
             self._emit("match_end", winner=self.winner, score=list(self.score))
         return self.tick_events
 
-    def _rewound(self, t: float):
-        """Agent positions / heights / lean offsets at world time `t` (clamped to the history)."""
-        h = self._hist
-        if not h or t >= h[-1][0]:
-            return None
-        if t <= h[0][0]:
-            return h[0][1], h[0][2], h[0][3]
-        for i in range(len(h) - 1, 0, -1):
-            t0, p0, z0, o0 = h[i - 1]
-            t1, p1, z1, o1 = h[i]
-            if t0 <= t <= t1:
-                k = (t - t0) / max(t1 - t0, 1e-9)
-                return p0 + (p1 - p0) * k, z0 + (z1 - z0) * k, o0 + (o1 - o0) * k
-        return None
-
-    def tdm_check_end(self):
-        lim = self.cfg.kill_limit
-        if lim and max(self.team_kills) >= lim:
-            self.done = True
-            self.winner = int(np.argmax(self.team_kills))
-        elif self.cfg.time_limit and self.time >= self.cfg.time_limit:
-            self.done = True
-            tk = self.team_kills
-            self.winner = -1 if tk[0] == tk[1] else int(np.argmax(tk))
-
     # ------------------------------------------------------------------ agents
     def _update_agent(self, a: Agent, act: Action, dt: float):
         if not a.alive:
-            if self.cfg.respawn and self.mode.can_respawn(a) and self.time >= a.respawn_at:
-                self._respawn(a)
-            else:
-                if act.gadget and not a.prev_gadget:
-                    self.gadgets.toggle_view(a)
-                if a.view_mode:
-                    self.gadgets.control(a, act, dt)
-            a.prev_fire, a.prev_alt, a.prev_reload = act.fire, act.alt, act.reload
-            a.prev_use, a.prev_gadget = act.use, act.gadget
-            return
-        gadget_edge = act.gadget and not a.prev_gadget
-        use_edge = act.use and not a.prev_use
-        a.prev_use, a.prev_gadget = act.use, act.gadget
-        if gadget_edge:
-            self.gadgets.toggle_view(a)
-        if a.view_mode:
-            # body stands still while the player looks through a drone / camera
-            self.gadgets.control(a, act, dt)
-            self._move(a, IDLE, dt)
-            self._update_lean(a, 0, dt)
-            self._recover(a, dt)
             a.prev_fire, a.prev_alt, a.prev_reload = act.fire, act.alt, act.reload
             return
         a.yaw = (a.yaw + float(act.look_yaw)) % 360.0
         a.pitch = float(np.clip(a.pitch + float(act.look_pitch), -C.MAX_PITCH, C.MAX_PITCH))
-        if a.busy is not None:
-            self._update_busy(a, act)
-        elif use_edge:
-            self.mode.use(a)
-        if act.switch and a.busy is None:
+        if act.switch:
             self.switch_weapon(a, int(act.switch))
         self._update_lean(a, int(act.lean) if not a.frozen else 0, dt)
-        self._move(a, act if not a.frozen and a.busy is None else _crouch_only(act), dt)
-        if a.busy is None and not a.frozen:
+        self._move(a, act if not a.frozen else _crouch_only(act), dt)
+        if not a.frozen:
             self._weapon(a, act)
-        elif a.frozen:
+        else:
             a.ads = False
             a.fire_queue_until = -1.0
         self._recover(a, dt)
         a.prev_fire, a.prev_alt, a.prev_reload = act.fire, act.alt, act.reload
-
-    def start_busy(self, a: Agent, kind: str, dur: float, data=None):
-        a.busy = (kind, self.time, dur, data)
-        a.ads = False
-        a.fire_queue_until = -1.0
-        self._emit("busy", agent=a.id, kind=kind, dur=dur)
-
-    def _update_busy(self, a: Agent, act: Action):
-        kind, t0, dur, data = a.busy
-        if not act.use and not (act.fire and kind in ("plant", "place")):
-            a.busy = None
-            self._emit("busy_cancel", agent=a.id, kind=kind)
-            return
-        if self.time - t0 >= dur:
-            a.busy = None
-            self.mode.finish_busy(a, kind, data)
 
     def _update_lean(self, a: Agent, want: int, dt: float):
         want = float(np.clip(want, -1, 1))
@@ -632,17 +460,16 @@ class World:
                 target = math.copysign(lim, target)
         a.lean_off = target
 
-    def switch_weapon(self, a: Agent, slot: int):
-        if slot == a.slot or slot not in a.inv:
-            return False
-        if getattr(a, "role", "human") != "human" and slot != SLOT_MELEE:
+    def switch_weapon(self, a: Agent, slot: int, force: bool = False):
+        if (slot == a.slot and not force) or slot not in a.inv:
             return False
         ws = a.inv[slot]
-        if ws.spec.kind in ("grenade", "gadget") and ws.mag <= 0:
+        if ws.spec.kind == "grenade" and ws.mag <= 0:
             return False
         if a.throw_at >= 0:
             return False
-        a.last_slot = a.slot
+        if slot != a.slot:
+            a.last_slot = a.slot
         a.slot = slot
         a.ready_at = self.time + ws.spec.draw_time
         a.reload_until = 0.0
@@ -704,7 +531,7 @@ class World:
         if wl > 1.0:
             wish /= wl
             wl = 1.0
-        maxspeed = C.RUN_SPEED * spec.move_mult * self.mode.move_scale * getattr(a, "speed_mult", 1.0)
+        maxspeed = C.RUN_SPEED * spec.move_mult
         if a.ads:
             maxspeed *= spec.ads_move_mult
         if a.crouching:
@@ -713,21 +540,17 @@ class World:
             maxspeed *= C.WALK_MULT
         if abs(a.lean) > 0.3:
             maxspeed *= 0.85
-        if self.gadgets.items:
-            maxspeed *= self.gadgets.speed_mult(a)
         wishspeed = maxspeed * wl
         wishdir = wish / wl if wl > 1e-6 else np.zeros(2)
 
         vxy = a.vel[:2].copy()
         jumped = False
         if a.on_ground:
-            # a knocked-back zombie slides: friction and control are cut while the shove lasts
-            knocked = self.time < a.knock_until
             speed = float(np.hypot(*vxy))
             if speed > 1e-6:
-                drop = max(speed, C.STOP_SPEED) * C.FRICTION * (0.15 if knocked else 1.0) * dt
+                drop = max(speed, C.STOP_SPEED) * C.FRICTION * dt
                 vxy *= max(speed - drop, 0.0) / speed
-            vxy = self._accelerate(vxy, wishdir, wishspeed, C.GROUND_ACCEL * (0.25 if knocked else 1.0), dt)
+            vxy = self._accelerate(vxy, wishdir, wishspeed, C.GROUND_ACCEL, dt)
             if act.jump and self.time >= a.next_jump and not self._overlaps(a.pos + [0, 0, 0.1], a.height).any():
                 a.vel[2] = C.JUMP_SPEED
                 a.on_ground = False
@@ -813,7 +636,7 @@ class World:
                 vel[2] = 0.0
         a.pos[:] = newp
         a.on_ground = on_ground
-        if a.pos[2] < -20.0:  # safety net: should never fall off the ship
+        if a.pos[2] < -20.0:  # safety net: fell out of the map
             self._kill(a, None, "world", False)
 
     def _separate_agents(self):
@@ -914,54 +737,6 @@ class World:
                 a.cook_until = now + spec.fuse
                 a.throw_under = bool(alt_edge and not fire_edge)
                 self._emit("throw_start", agent=a.id, weapon=ws.name, under=a.throw_under)
-        elif spec.kind == "shield":
-            a.ads = False
-            if ready and fire_edge and ws.mag > 0 and now >= a.next_fire:
-                ws.mag -= 1
-                a.next_fire = now + spec.interval
-                a.protect_until = 0.0
-                self.gadgets.shield_flash(a, spec)
-        else:  # bomb / placeable gadget
-            a.ads = False
-            held = spec.kind == "bomb" and act.fire and a.busy is None
-            if ready and (fire_edge or held) and ws.mag > 0:
-                if spec.kind == "bomb":
-                    self.mode.item_fire(a, ws)
-                else:
-                    self.gadgets.item_fire(a, ws)
-
-    def set_primary(self, a: Agent, name: str):
-        """Change the primary weapon; applied immediately during the first seconds after spawning
-        when the mode hands out free weapons (TDM / domination)."""
-        if not self.mode.free_weapons:
-            return False
-        a.primary = name
-        a.loadout["primary"] = name
-        if a.alive and self.time - a.spawn_time < 6.0:
-            self.give(a, name, select=True)
-            return True
-        return False
-
-    def set_loadout(self, a: Agent, key: str) -> bool:
-        """Pick a `LOADOUTS` preset (B menu in TDM / domination). Same timing rule as `set_primary`;
-        returns True when the weapons were swapped right away."""
-        if not self.mode.free_weapons or key not in LOADOUT_BY_KEY:
-            return False
-        _key, _zh, _en, primary, secondary = LOADOUT_BY_KEY[key]
-        a.primary = primary
-        a.loadout = {"primary": primary, "secondary": secondary}
-        if a.alive and self.time - a.spawn_time < 6.0:
-            self.give(a, secondary)
-            self.give(a, primary, select=True)
-            return True
-        return False
-
-    def set_secondary(self, a: Agent, name: str):
-        a.loadout["secondary"] = name
-        if a.alive and self.mode.free_weapons and self.time - a.spawn_time < 6.0:
-            self.give(a, name, select=True)
-            return True
-        return False
 
     def best_slot(self, a: Agent) -> int:
         for slot in (SLOT_PRIMARY, SLOT_PISTOL):
@@ -993,7 +768,6 @@ class World:
     def _fire_gun(self, a: Agent, ws: WeaponState, spec):
         now = self.time
         ws.mag -= 1
-        a.protect_until = 0.0
         if now - a.last_shot > spec.interval * 1.8:
             a.shots_in_burst = 0
         spread = self.current_spread(a)
@@ -1005,12 +779,11 @@ class World:
             rr = spread * math.sqrt(self.rng.random())
             th = 2.0 * math.pi * self.rng.random()
             d = dir_from_angles(yaw + rr * math.cos(th), pitch + rr * math.sin(th))
-            hit = self.trace_bullet(eye, d, spec.range, a.id, spec.penetration)
+            hit = self.trace_bullet(eye, d, spec.range, a.id)
             hits.append(hit)
             victim = hit["agent"]
             if victim is not None:
-                dist = hit["t"]
-                dmg = spec.damage * (spec.falloff ** (dist / 10.0)) * hit["mult"]
+                dmg = spec.damage * (spec.falloff ** (hit["t"] / 10.0))
                 group = hit["group"]
                 if group == 0:
                     dmg *= spec.head_mult
@@ -1019,12 +792,6 @@ class World:
                 acc = dealt.setdefault(victim, [0.0, group, d])
                 acc[0] += dmg
                 acc[1] = min(acc[1], group)
-            for box, _p in hit["walls"]:
-                self.damage_box(box, spec.wall_damage, "bullet")
-            if hit["stop_box"] is not None:
-                self.damage_box(hit["stop_box"], spec.wall_damage, "bullet")
-            if hit["gadget"] is not None:
-                self.gadgets.shoot(hit["gadget"], spec.damage)
         for victim, (dmg, group, d) in dealt.items():
             self.apply_damage(self.agents[victim], dmg, a, ws.name, group, d)
         last = hits[-1]
@@ -1034,10 +801,8 @@ class World:
                                  h["mat"], h["agent"]] for h in hits[:-1]]
         self._emit("shot", agent=a.id, weapon=ws.name, origin=eye.tolist(), end=last["point"].tolist(),
                    normal=last["normal"].tolist(), hit_agent=last["agent"],
-                   group=last["group"], mat=last["mat"],
-                   pierce=[p.tolist() for _b, p in last["walls"]][:3], **extra)
-        if not spec.silenced or self.rng.random() < 0.15:
-            self.noises.append((now, eye.copy(), a.team, "shot"))
+                   group=last["group"], mat=last["mat"], **extra)
+        self.noises.append((now, eye.copy(), a.team, "shot"))
         i = min(a.shots_in_burst, len(spec.recoil) - 1)
         rp, ry = spec.recoil[i]
         j = spec.recoil_jitter
@@ -1059,87 +824,28 @@ class World:
             a.punch *= math.exp(-spec.punch_recover * dt)
         a.bloom = max(0.0, a.bloom - spec.spread_recover * dt)
 
-    def soft_box(self, box) -> bool:
-        """True if bullets pass through `box` (unreinforced destructible wall / barricade)."""
-        p = box.params
-        if "panel" in p:
-            return self.destruct.panel_soft(p["panel"])
-        if "dyn" in p:
-            return self.gadgets.box_soft(p["dyn"])
-        return False
-
-    def damage_box(self, box, amount: float, kind: str = "bullet"):
-        p = box.params
-        if "panel" in p:
-            self.destruct.damage_panel(p["panel"], amount, kind)
-        elif "dyn" in p:
-            self.gadgets.damage_box(p["dyn"], amount, kind)
-
-    def trace_bullet(self, origin, d, max_dist, shooter_id, penetration: float = 0.0):
-        """Hitscan. Soft walls are pierced (damage multiplied by `penetration` per wall, max 3)."""
-        walls = []
-        o = np.asarray(origin, dtype=np.float64)
-        travelled = 0.0
-        while True:
-            t_w, idx_w, n_w = raycast_boxes(o[None], d[None], max_dist - travelled, self.bmin, self.bmax)
-            tw = travelled + float(t_w[0])
-            box = self.bullet_boxes[idx_w[0]] if idx_w[0] >= 0 else None
-            if box is not None and penetration > 0.0 and len(walls) < 3 and self.soft_box(box):
-                hp = origin + d * tw
-                walls.append((tw, box, hp))
-                # exit point of the box along the ray
-                safe = np.where(np.abs(d) < 1e-9, 1e-9, d)
-                far = np.where(d > 0, box.mx, box.mn)
-                t_exit = float(np.min((np.asarray(far) - hp) / safe))
-                travelled = tw + max(t_exit, 0.0) + 1e-3
-                o = origin + d * travelled
-                if travelled >= max_dist:
-                    tw, box = max_dist, None
-                    break
-                continue
-            break
-        result = {"t": tw, "agent": None, "group": -1, "normal": n_w[0],
-                  "mat": box.mat if box is not None else None, "walls": [], "mult": 1.0, "stop_box": box}
+    def trace_bullet(self, origin, d, max_dist, shooter_id):
+        """Hitscan against the map and the hit boxes of every other living agent."""
+        origin = np.asarray(origin, dtype=np.float64)
+        t_w, idx_w, n_w = raycast_boxes(origin[None], d[None], max_dist, self.bmin, self.bmax)
+        tw = float(t_w[0])
+        box = self.bullet_boxes[idx_w[0]] if idx_w[0] >= 0 else None
+        result = {"t": tw, "agent": None, "group": -1, "normal": n_w[0], "mat": box.mat if box is not None else None}
         cands = [g for g in self.agents if g.alive and g.id != shooter_id]
         if cands:
-            past = None
-            rt = self.rewind.get(shooter_id)
-            if rt is not None:
-                past = self._rewound(max(rt, self.time - 0.25))
-            if past is None:
-                mins, maxs = zip(*(g.hitboxes() for g in cands))
-            else:
-                mins, maxs = zip(*(hitboxes_at(past[0][g.id], past[1][g.id], past[2][g.id]) for g in cands))
+            mins, maxs = zip(*(g.hitboxes() for g in cands))
             t_a, idx_a, n_a = raycast_boxes(origin[None], d[None], min(tw, max_dist),
                                             np.concatenate(mins), np.concatenate(maxs))
             if idx_a[0] >= 0 and t_a[0] < tw:
                 v = cands[idx_a[0] // 3]
-                group = int(idx_a[0] % 3)
-                if self.gadgets.shield_blocks(v, d, group):
-                    result.update(t=float(t_a[0]), normal=-d, mat="metal", stop_box=None)
-                else:
-                    result.update(t=float(t_a[0]), agent=v.id, group=group, normal=n_a[0], mat="flesh",
-                                  stop_box=None)
+                result.update(t=float(t_a[0]), agent=v.id, group=int(idx_a[0] % 3), normal=n_a[0], mat="flesh")
         t = result["t"] if np.isfinite(result["t"]) else max_dist
-        result["gadget"] = None
-        if self.gadgets.items:
-            g = self.gadgets.ray_hit(np.asarray(origin, dtype=np.float64), d, t)
-            if g is not None and g[0] < t:
-                t = g[0]
-                result.update(agent=None, group=-1, normal=-d, mat="metal", stop_box=None, gadget=g[1])
         result["t"] = t
         result["point"] = origin + d * t
-        passed = [(b, p) for tw_, b, p in walls if tw_ < t]
-        result["walls"] = passed
-        result["mult"] = penetration ** len(passed) if passed else 1.0
         return result
 
     def segment_clear(self, p, q, smoke=False) -> bool:
-        """True if the segment hits no bullet-blocking box (and optionally no smoke).
-
-        Uses the size-sorted LOS box list with chunked early-out, same path as `visibility`,
-        instead of a full R×N raycast every call.
-        """
+        """True if the segment hits no bullet-blocking box (and optionally no smoke)."""
         p = np.asarray(p, dtype=np.float64)
         q = np.asarray(q, dtype=np.float64)
         if float(np.linalg.norm(q - p)) < 1e-6:
@@ -1158,19 +864,11 @@ class World:
 
     def apply_damage(self, victim: Agent, amount: float, attacker: Agent | None, weapon: str,
                      group: int = 1, direction=None, kind: str = "bullet") -> float:
-        if not victim.alive or self.time < victim.protect_until:
-            return 0.0
-        if getattr(self.mode, "phase", None) in ("freeze", "prep"):
+        if not victim.alive or self.mode.phase == "freeze":
             return 0.0
         if attacker is not None and attacker.team == victim.team and attacker.id != victim.id \
                 and not self.cfg.friendly_fire and weapon not in ("frag", "molotov"):
             return 0.0
-        if kind == "melee" and attacker is not None and getattr(self.mode, "try_infect", None) \
-                and self.mode.try_infect(attacker, victim):
-            return 0.0
-        armored_hit = kind == "explosion" or (kind == "bullet" and (group == 1 or (group == 0 and victim.helmet)))
-        if victim.armor > 0.0 and armored_hit:
-            amount *= 1.0 - victim.armor
         dealt = float(min(amount, victim.hp))
         victim.hp -= amount
         victim.last_damage_time = self.time
@@ -1181,7 +879,6 @@ class World:
                 attacker.damage_dealt += dealt
         self._emit("damage", attacker=attacker.id if attacker else -1, victim=victim.id,
                    amount=dealt, group=group, weapon=weapon, kind=kind)
-        self.mode.on_damage(victim, attacker, float(amount), direction, weapon, kind)
         if victim.hp <= 0.0:
             self._kill(victim, attacker, weapon, group == 0)
         return dealt
@@ -1193,16 +890,12 @@ class World:
         victim.hp = 0.0
         victim.deaths += 1
         victim.death_time = self.time
-        victim.respawn_at = self.time + self.cfg.respawn_time
         victim.killer = attacker.id if attacker else -1
         victim.throw_at = -1.0
         victim.cook_until = -1.0
         victim.reload_until = 0.0
         victim.ads = False
-        victim.busy = None
         victim.lean = victim.lean_off = 0.0
-        if victim.view_mode:
-            self.gadgets.exit_view(victim)
         if attacker is not None and attacker.team != victim.team:
             attacker.kills += 1
             if headshot:
@@ -1210,12 +903,10 @@ class World:
             self.team_kills[attacker.team] += 1
         self._emit("kill", attacker=attacker.id if attacker else -1, victim=victim.id,
                    weapon=weapon, headshot=bool(headshot), pos=victim.pos.tolist())
-        self.mode.on_kill(victim, attacker, weapon, headshot)
 
     # melee --------------------------------------------------------------------
     def _melee(self, a: Agent, spec, heavy: bool):
         now = self.time
-        a.protect_until = 0.0
         a.next_fire = now + (spec.heavy_interval if heavy else spec.interval)
         delay = spec.heavy_hit_delay if heavy else spec.hit_delay
         self.pending_melee.append((now + delay, a.id, heavy))
@@ -1246,13 +937,6 @@ class World:
             if best is None and wall is not None:
                 self._emit("melee_hit", agent=a.id, victim=-1, point=wall["point"].tolist(),
                            normal=wall["normal"].tolist(), heavy=heavy, backstab=False)
-                if wall["stop_box"] is not None:
-                    br = spec.extra.get("breach_radius")
-                    if br:
-                        self.destruct.explode(wall["point"] - dir_from_angles(a.yaw, a.pitch) * 0.05, br, "soft",
-                                              floors=bool(spec.extra.get("floors")), source=a.id)
-                    else:
-                        self.damage_box(wall["stop_box"], spec.wall_damage * (1.6 if heavy else 1.0), "melee")
             if best is not None:
                 v = self.agents[best["agent"]]
                 vf = dir_from_angles(v.yaw, 0.0)[:2]
@@ -1277,7 +961,6 @@ class World:
         if spec.kind != "grenade" or ws.mag <= 0:
             return
         ws.mag -= 1
-        a.protect_until = 0.0
         pitch = a.pitch + (6.0 if not a.throw_under else 2.0)
         d = dir_from_angles(a.yaw, pitch)
         speed = spec.throw_speed * (0.42 if a.throw_under else 1.0)
@@ -1304,7 +987,6 @@ class World:
         if spec.name != "frag" or ws.mag <= 0:
             return
         ws.mag -= 1
-        a.protect_until = 0.0
         pos = a.pos + np.array([0.0, 0.0, a.height * 0.45])
         pr = Projectile(self._new_id(), spec.name, a.id, a.team, pos, np.zeros(3), self.time, self.time)
         self._detonate(pr)
@@ -1323,7 +1005,6 @@ class World:
             speed = float(np.linalg.norm(pr.vel))
             n = max(1, int(math.ceil(speed * dt / 0.08)))
             h = dt / n
-            burst = False
             ignite = False
             for _ in range(n):
                 pr.vel[2] -= C.GRAVITY * h
@@ -1334,12 +1015,6 @@ class World:
                     pr.pos[axis] += step
                     hit = self._proj_overlaps(pr.pos)
                     if hit.any():
-                        if pr.kind in self.gadgets.PROJECTILES and pr.explode_at > self.time:
-                            pr.explode_at = self.time
-                            pr.vel[:] = 0.0
-                            pr.pos[axis] -= step * 0.5
-                            burst = True
-                            break
                         if step > 0:
                             pr.pos[axis] = self.smin[hit, axis].min() - r - 1e-4
                         else:
@@ -1356,9 +1031,8 @@ class World:
                             self._emit("bounce", proj=pr.id, pos=pr.pos.tolist(), speed=vin)
                         if spec.fire_radius > 0.0 and axis == 2 and step < 0:
                             ignite = True
-                            burst = True
                             break
-                if burst:
+                if ignite:
                     break
             if ignite or (spec.fire_radius <= 0.0 and self.time >= pr.explode_at):
                 self._detonate(pr)
@@ -1387,17 +1061,13 @@ class World:
             self._emit("flash", proj=pr.id, pos=pr.pos.tolist(), owner=pr.owner)
             self.flash_at(pr.pos + np.array([0.0, 0.0, 0.1]), spec.flash_radius)
             return
-        if pr.kind in self.gadgets.PROJECTILES:
-            self.gadgets.projectile_hit(pr)
-            return
         self._emit("explode", proj=pr.id, pos=pr.pos.tolist(), weapon=pr.kind, owner=pr.owner)
         self.noises.append((self.time, pr.pos.copy(), pr.team, "explode"))
         owner = self.agents[pr.owner]
         origin = pr.pos + np.array([0.0, 0.0, 0.12])
-        R = spec.blast_radius
-        self.explosion(origin, R, spec.damage, owner, pr.kind, spec.wall_damage)
+        self.explosion(origin, spec.blast_radius, spec.damage, owner, pr.kind)
 
-    def flash_at(self, origin, radius: float, cone_dir=None):
+    def flash_at(self, origin, radius: float):
         """Blind agents that can see `origin` (scaled by distance and facing)."""
         for v in self.agents:
             if not v.alive:
@@ -1407,9 +1077,6 @@ class World:
             dist = float(np.linalg.norm(dvec))
             if dist > radius or not self.segment_clear(eye, origin, smoke=True):
                 continue
-            if cone_dir is not None:
-                if float(np.dot(-dvec / max(dist, 1e-6), cone_dir)) < 0.5:
-                    continue
             facing = float(np.dot(dir_from_angles(v.yaw, v.pitch), dvec / max(dist, 1e-6)))
             strength = (1.0 - dist / radius) * (0.35 + 0.65 * max(0.0, facing))
             dur = 1.2 + 6.4 * strength
@@ -1447,11 +1114,7 @@ class World:
             fall = 1.0 - 0.4 * (dist / max(f.radius, 1e-3))
             self.apply_damage(v, f.dps * 0.2 * fall, owner, f.weapon, 1, None, "fire")
 
-    def explosion(self, origin, R: float, damage: float, owner: Agent | None, weapon: str,
-                  wall_damage: float = 0.0):
-        if wall_damage > 0.0:
-            self.destruct.blast(origin, R * 0.45, wall_damage)
-            self.gadgets.blast(origin, R * 0.6, wall_damage)
+    def explosion(self, origin, R: float, damage: float, owner: Agent | None, weapon: str):
         for v in self.agents:
             if not v.alive:
                 continue
@@ -1463,8 +1126,6 @@ class World:
             if not (self.segment_clear(origin, center) or self.segment_clear(origin, head)):
                 continue
             dmg = damage * (1.0 - dist / R) ** 0.9
-            if owner is not None and v.id == owner.id and weapon != "frag":
-                dmg *= 0.6
             self.apply_damage(v, dmg, owner, weapon, 1, None, "explosion")
 
     # perception ---------------------------------------------------------------

@@ -9,15 +9,23 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fpsrl import EnvConfig, FPSEnv, FPSMultiAgentEnv  # noqa: E402
 from fpsrl.bots import Bot  # noqa: E402
 from fpsrl.sim import Action, MatchConfig, World, angles_to  # noqa: E402
+from fpsrl.weapons import LOADOUT_BY_KEY, LOADOUT_KEYS  # noqa: E402
+
+NO_FREEZE = {"freeze_time": 0.0}
 
 
-def _duel(primary="ak47"):
-    w = World(MatchConfig(team_size=1, primaries=[primary, "ak47"], seed=0))
-    w.reset(0)
+def _world(team_size=1, seed=0, **kw):
+    w = World(MatchConfig(team_size=team_size, seed=seed, mode_params=dict(NO_FREEZE), **kw))
+    w.reset(seed)
+    w.step({})  # leave the (zero length) freeze time
+    return w
+
+
+def _duel(loadout="rifle"):
+    w = _world(1, 0, loadouts=[loadout, "rifle"])
     shooter, target = w.agents
     target.pos[:] = shooter.pos + np.array([4.0, 0.0, 0.0])
     target.prev_pos[:] = target.pos
-    shooter.protect_until = target.protect_until = 0.0
     return w, shooter, target
 
 
@@ -40,7 +48,8 @@ def test_agents_block_each_other():
 
 
 def test_headshot_kills():
-    w, shooter, target = _duel("awm")
+    w, shooter, target = _duel("sniper")
+    assert shooter.weapon.name == "awm"
     events = []
     for i in range(120):  # semi-auto: needs fresh trigger presses
         _aim(shooter, target.eye())
@@ -52,7 +61,7 @@ def test_headshot_kills():
 
 
 def test_body_damage_and_ammo():
-    w, shooter, target = _duel("ak47")
+    w, shooter, target = _duel("rifle")
     mag0 = shooter.weapon.mag
     dmg = []
     for _ in range(40):
@@ -64,22 +73,62 @@ def test_body_damage_and_ammo():
 
 
 def test_movement_and_collision():
-    from fpsrl.config import PLAYER_RADIUS
-    w = World(MatchConfig(team_size=1, seed=1))
-    w.reset(1)
+    w = _world(1, 1)
     a = w.agents[0]
-    a.yaw = 0.0  # CT spawn looks along +X into the bulkhead
     a.vel[:] = 0.0
     for _ in range(24):
         w.step({a.id: Action(move_forward=1.0)})
     assert np.linalg.norm(a.vel[:2]) > 4.0
-    for _ in range(120):
-        w.step({a.id: Action(move_forward=1.0)})
-    assert abs(a.pos[0] - (-26.375 - PLAYER_RADIUS)) < 0.02, a.pos
-    for _ in range(600):  # run along the deck; must never leave the map
-        w.step({a.id: Action(move_forward=1.0, move_right=0.6)})
     (x0, y0), (x1, y1) = w.map.bounds
+    for k in range(900):  # run around; must never leave the map or end up inside a wall
+        w.step({a.id: Action(move_forward=1.0, move_right=0.6, look_yaw=0.8 if k % 300 < 150 else -0.5)})
+        assert not w._overlaps(a.pos, a.height).any(), a.pos
     assert x0 <= a.pos[0] <= x1 and y0 <= a.pos[1] <= y1
+
+
+def test_freeze_time_blocks_movement_and_fire():
+    w = World(MatchConfig(team_size=1, seed=0, mode_params={"freeze_time": 1.0}))
+    w.reset(0)
+    a = w.agents[0]
+    p0, mag0 = a.pos.copy(), a.weapon.mag
+    for _ in range(30):
+        w.step({a.id: Action(move_forward=1.0, fire=True)})
+    assert w.mode.phase == "freeze" and np.allclose(a.pos[:2], p0[:2]) and a.weapon.mag == mag0
+    for _ in range(60):
+        w.step({a.id: Action(move_forward=1.0)})
+    assert w.mode.phase == "live" and not np.allclose(a.pos[:2], p0[:2])
+
+
+def test_fixed_loadouts():
+    w = World(MatchConfig(team_size=4, seed=3, loadouts=["sniper", "shotgun"]))
+    assert w.agents[0].loadout == "sniper" and w.agents[0].weapon.name == "awm"
+    assert w.agents[1].loadout == "shotgun" and w.agents[1].inv[1].name == "nova"
+    for a in w.agents:
+        primary = LOADOUT_BY_KEY[a.loadout][3]
+        assert a.inv[1].name == primary and a.inv[2].name == "glock" and a.inv[3].name == "knife"
+        assert {a.inv[s].name for s in (4, 5, 6, 7)} == {"frag", "smoke", "flash", "molotov"}
+    drawn = set()
+    for seed in range(12):  # unset loadouts are drawn at random per match
+        w.reset(seed)
+        drawn |= {a.loadout for a in w.agents[2:]}
+    assert drawn == set(LOADOUT_KEYS)
+    a = w.agents[2]
+    assert w.mode.phase == "freeze"
+    other = next(k for k in LOADOUT_KEYS if k != a.loadout)
+    assert w.set_loadout(a, other) and a.inv[1].name == LOADOUT_BY_KEY[other][3]
+
+
+def test_elimination_round_flow():
+    w = _world(1, 0, loadouts=["rifle", "rifle"])
+    w.mode.p.update(post_time=0.5, win_rounds=2, half_rounds=5)
+    shooter, target = w.agents
+    ends = []
+    for _ in range(2):
+        w.apply_damage(target, 500.0, shooter, "ak47")
+        for _ in range(60):
+            ends += [e for e in w.step({}) if e["type"] == "round_end"]
+    assert [e["reason"] for e in ends] == ["elimination", "elimination"]
+    assert w.done and w.winner == shooter.team and w.score == [2, 0]
 
 
 def test_determinism():
@@ -107,13 +156,11 @@ def test_cook_frag_hits_self_and_team():
     from fpsrl.sim import Projectile, dir_from_angles
     from fpsrl.weapons import SLOT_FRAG
 
-    w = World(MatchConfig(team_size=2, friendly_fire=False, seed=1))
-    w.reset(1)
+    w = _world(2, 1, friendly_fire=False)
     thrower, mate = w.agents[0], w.agents[1]
     w.switch_weapon(thrower, SLOT_FRAG)
     for _ in range(40):
         w.step({})
-    thrower.protect_until = mate.protect_until = 0.0
     mate.pos[:] = thrower.pos + np.array([0.9, 0.0, 0.0])
     mate.prev_pos[:] = mate.pos
     mate.vel[:] = 0.0
@@ -127,13 +174,11 @@ def test_cook_frag_hits_self_and_team():
     assert thrower.alive and w.projectiles
     assert w.projectiles[0].explode_at - w.time > 1.5
 
-    w = World(MatchConfig(team_size=2, friendly_fire=False, seed=2))
-    w.reset(2)
+    w = _world(2, 2, friendly_fire=False)
     thrower, mate = w.agents[0], w.agents[1]
     w.switch_weapon(thrower, SLOT_FRAG)
     for _ in range(40):
         w.step({})
-    thrower.protect_until = mate.protect_until = 0.0
     mate.pos[:] = thrower.pos + np.array([0.9, 0.0, 0.0])
     mate.prev_pos[:] = mate.pos
     mate.vel[:] = 0.0
@@ -150,7 +195,6 @@ def test_cook_frag_hits_self_and_team():
     victim.pos[:] = mate_pos
     victim.prev_pos[:] = victim.pos
     victim.team = thrower.team
-    thrower.protect_until = victim.protect_until = 0.0
     for a in (thrower, victim):
         origin = a.eye() + dir_from_angles(a.yaw, 0.0) * 1.2
         a.yaw, a.pitch = angles_to(a.eye(), origin)
@@ -161,7 +205,6 @@ def test_cook_frag_hits_self_and_team():
     assert thrower.flash_until > w.time and victim.flash_until > w.time
 
     thrower.hp = victim.hp = 100.0
-    thrower.protect_until = victim.protect_until = 0.0
     pr = Projectile(w._new_id(), "molotov", thrower.id, thrower.team,
                     thrower.pos + np.array([0.4, 0.0, 0.15]), np.zeros(3), w.time, w.time)
     w._detonate(pr)
@@ -232,7 +275,7 @@ def test_look_bins_do_not_lock_onto_an_enemy():
             pos = np.array(pos, dtype=np.float64)
             pos[2] = me.pos[2]
             aim = pos + np.array([0.0, 0.0, 1.2])
-            if w.segment_clear(me.eye(), aim):
+            if w.segment_clear(me.eye(), aim) and not w._overlaps(pos + (0, 0, 0.02), 1.8).any():
                 placed.append(pos)
             if len(placed) == 2:
                 break
@@ -273,22 +316,24 @@ def test_multiagent_api():
     assert set(rew) == {"agent_0", "agent_2"}
 
 
-def test_segment_clear_matches_visibility_boxes():
-    """LOS helper must agree with the chunked box path used by visibility()."""
-    from fpsrl.geometry import raycast_boxes, segments_blocked
-    w = World(MatchConfig(team_size=1, map_name="bank", mode="tdm", seed=0))
-    w.reset(0)
-    # Soft drywall at x = -6 in the bank basement.
-    p0 = np.array([-8.0, -14.0, -2.8])
-    p1 = np.array([-4.0, -14.0, -2.8])
-    clear = p0 + np.array([0.3, 0.0, 0.0])
-    assert not w.segment_clear(p0, p1)
-    assert w.segment_clear(p0, clear)
-    dist = float(np.linalg.norm(p1 - p0))
-    t, _, _ = raycast_boxes(p0[None], ((p1 - p0) / dist)[None], dist, w.bmin, w.bmax)
-    assert t[0] < dist - 1e-3
-    assert segments_blocked(p0[None], p1[None], w.los_min, w.los_max, chunk=256)[0]
-    assert not segments_blocked(p0[None], clear[None], w.los_min, w.los_max, chunk=256)[0]
+def test_segment_clear_matches_raycast():
+    """LOS helper (chunked box path used by visibility()) must agree with the bullet raycast."""
+    from fpsrl.geometry import raycast_boxes
+    w = World(MatchConfig(team_size=1, seed=0))
+    rng = np.random.default_rng(0)
+    (x0, y0), (x1, y1) = w.map.bounds
+    blocked = 0
+    for _ in range(300):
+        p0 = np.array([rng.uniform(x0, x1), rng.uniform(y0, y1), rng.uniform(0.2, 6.0)])
+        p1 = p0 + np.array([*rng.uniform(-15, 15, 2), rng.uniform(-1, 1)])
+        dist = float(np.linalg.norm(p1 - p0))
+        t, _, _ = raycast_boxes(p0[None], ((p1 - p0) / dist)[None], dist, w.bmin, w.bmax)
+        hit = bool(t[0] < dist - 1e-3)
+        if abs(float(t[0]) - dist) < 1e-2 or float(t[0]) < 1e-3:
+            continue  # grazing / starting inside a box: either answer is fine
+        assert w.segment_clear(p0, p1) == (not hit)
+        blocked += hit
+    assert blocked > 5
 
 
 if __name__ == "__main__":

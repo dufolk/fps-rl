@@ -13,13 +13,8 @@ SYNTH_VERSION = "10"
 CUSTOM_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "custom_sfx")
 REAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "gunshots")
 REAL_SFX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "sfx_real")
-REAL_GUNSHOTS = {
-    "glock": "pistol_real.wav", "deagle": "pistol_real.wav", "dualies": "pistol_real.wav",
-    "ak47": "rifle_real.wav", "m4a4": "rifle_real.wav", "famas": "rifle_real.wav",
-    "mp5": "pistol_real.wav", "mp9": "pistol_real.wav", "uzi": "pistol_real.wav",
-    "awm": "sniper_real.wav", "scar20": "sniper_real.wav", "m249": "rifle_real.wav",
-    "nova": "shotgun_real.wav",
-}
+REAL_GUNSHOTS = {"glock": "pistol_real.wav", "ak47": "rifle_real.wav", "awm": "sniper_real.wav",
+                 "nova": "shotgun_real.wav"}
 
 
 def _lowpass(x, fc):
@@ -210,7 +205,6 @@ def build_library() -> dict[str, np.ndarray]:
     lib = {
         "ak47": gunshot(0.75, 6000, 1400, 85, 0.22, 2.6, 1),
         "awm": gunshot(1.4, 7000, 1000, 60, 0.45, 3.2, 2, crack_decay=0.014, body_decay=0.09),
-        "deagle": gunshot(0.6, 5000, 1700, 110, 0.18, 2.4, 3),
         "glock": gunshot(0.4, 6200, 2200, 150, 0.08, 1.7, 55, crack_decay=0.006, body_decay=0.025),
         "dry": click(2600, 0.06, 4),
         "mag_out": compose(0.3, [(0.0, click(1800, 0.08, 5, 0.01), 1.0), (0.05, thud(220, 0.12, 6), 0.4)]),
@@ -239,37 +233,12 @@ def build_library() -> dict[str, np.ndarray]:
         "kill_nade": grenade_accent(),
         "ui_click": ui_click(),
         "ui_hover": ui_hover(),
-        # extended arsenal
-        "m4a4": gunshot(0.7, 6500, 1600, 90, 0.2, 2.4, 31),
-        "m4a1": _norm(_lowpass(gunshot(0.35, 3500, 1200, 70, 0.06, 1.2, 32, crack_decay=0.004,
-                                       body_decay=0.02), 3200), 0.55),
-        "famas": gunshot(0.65, 6800, 1800, 95, 0.18, 2.3, 33),
-        "mp5": gunshot(0.5, 5200, 1900, 120, 0.12, 1.9, 34, body_decay=0.035),
-        "mp9": gunshot(0.45, 5600, 2100, 130, 0.1, 1.8, 35, body_decay=0.03),
-        "uzi": gunshot(0.45, 4800, 1800, 125, 0.1, 2.0, 36, body_decay=0.03),
-        "dualies": gunshot(0.45, 5800, 2000, 140, 0.1, 1.9, 37, body_decay=0.03),
-        "scar20": gunshot(1.0, 7000, 1200, 70, 0.32, 2.9, 38, crack_decay=0.012, body_decay=0.07),
-        "m249": gunshot(0.8, 5500, 1200, 75, 0.25, 2.8, 39),
         "nova": gunshot(1.1, 4500, 900, 55, 0.38, 3.4, 52, crack_decay=0.016, body_decay=0.1),
         "pump": compose(0.45, [(0.0, click(900, 0.12, 53, 0.02, 0.8), 0.9), (0.2, click(1600, 0.1, 54, 0.015), 1.0)]),
-        # objectives / gadgets
-        "beep": tone((2600,), 0.09, 0.03),
-        "plant_done": compose(0.5, [(0.0, tone((1800, 2700), 0.2, 0.06), 1.0), (0.18, click(2200, 0.1, 40), 0.6)]),
-        "defuse_tick": click(3000, 0.05, 41, 0.004),
-        "bomb_explode": _norm(explosion(91) + np.pad(explosion(92), (int(0.05 * SR), 0))[:len(explosion(91))], 0.95),
-        "capture": tone((880, 1320, 1760), 0.45, 0.15),
-        "lost": tone((440, 330), 0.45, 0.15),
         "round_win": tone((660, 880, 1320), 0.7, 0.25),
         "round_lose": tone((440, 370, 294), 0.7, 0.25),
         "flash_bang": compose(1.0, [(0.0, explosion(93), 0.6), (0.0, tone((3800,), 1.0, 0.6), 0.25)]),
-        "wall_break": compose(0.45, [(0.0, thud(110, 0.3, 42), 1.0), (0.02, whoosh(0.25, 300, 2500, 43), 0.6),
-                                     (0.05, click(1400, 0.2, 44, 0.04, 0.9), 0.5)]),
-        "reinforce": compose(0.6, [(0.0, click(900, 0.2, 45, 0.05, 0.3), 1.0), (0.25, thud(80, 0.3, 46), 0.8)]),
-        "drone": hiss(0.6, 47) * 0.4,
-        "view_static": compose(0.3, [(0.0, hiss(0.22, 50), 0.5), (0.0, click(5200, 0.04, 51, 0.003), 0.7)]),
-        "spot": tone((1500, 2250), 0.25, 0.06),
         "round_start": compose(0.5, [(0.0, tone((520,), 0.18, 0.06), 0.8), (0.2, tone((780,), 0.25, 0.08), 0.9)]),
-        "buy": compose(0.2, [(0.0, click(2000, 0.08, 48), 0.8), (0.06, click(3000, 0.06, 49), 0.6)]),
     }
     for k in range(1, 7):
         lib[f"kill_{k}"] = kill_sting(k, 70 + k)
@@ -335,8 +304,7 @@ def ensure_sounds(cache_dir: str) -> dict[str, str]:
     return paths
 
 
-POOL = {"ak47": 8, "awm": 4, "deagle": 6, "glock": 8, "m4a4": 8, "m4a1": 8, "famas": 8, "mp5": 8, "mp9": 8, "uzi": 8,
-        "dualies": 6, "scar20": 6, "m249": 10, "nova": 4, "step0": 3, "step1": 3, "step2": 3, "step3": 3, "hit": 4,
+POOL = {"ak47": 8, "awm": 4, "glock": 8, "nova": 4, "step0": 3, "step1": 3, "step2": 3, "step3": 3, "hit": 4,
         "impact_metal": 4, "flesh": 4, "bounce": 3, "explosion": 3}
 
 

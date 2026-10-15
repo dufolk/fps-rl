@@ -1,2 +1,0 @@
-Transport Ship, CrossFire remake. Steam workshop 970165514 https://steamcommunity.com/sharedfiles/filedetails/?id=970165514
-Imported with tools/import_bsp.py. Collision rebuilt as boxes; the render mesh is the BSP faces.

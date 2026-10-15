@@ -1,19 +1,15 @@
-"""FPS-RL: a lightweight 3D first-person shooter with a reinforcement-learning interface."""
+"""FPS-RL experiment environment: elimination on desert2 with fixed rifle / sniper / shotgun loadouts."""
 from .sim import Action, MatchConfig, World
 from .envs import EnvConfig, FPSEnv, FPSMultiAgentEnv, RewardConfig
 from .bots import Bot
 
-__version__ = "0.2.0"
+__version__ = "0.3.0-exp"
 
 # gym id -> EnvConfig overrides
 ENV_IDS = {
-    "FPSRL-TransportShip-v0": {},
-    "FPSRL-TransportShip-Dom-v0": {"map_name": "transport_ship", "mode": "dom", "max_episode_steps": 9000},
-    "FPSRL-Pyramid-Bio-v0": {"map_name": "pyramid", "mode": "bio", "team_size": 4, "max_episode_steps": 9000},
-    "FPSRL-Desert2-Bomb-v0": {"map_name": "desert2", "mode": "bomb", "team_size": 5,
-                              "mode_params": {"win_rounds": 5, "half_rounds": 4}, "max_episode_steps": 15000},
-    "FPSRL-HPTown-Dom-v0": {"map_name": "hp_town", "mode": "dom", "team_size": 5, "max_episode_steps": 9000},
-    "FPSRL-Bank-R6-v0": {"map_name": "bank", "mode": "r6", "team_size": 5, "max_episode_steps": 27000},
+    "FPSRL-Elim-v0": {},
+    "FPSRL-Elim-5v5-v0": {"team_size": 5, "mode_params": {"win_rounds": 5, "half_rounds": 4},
+                          "max_episode_steps": 15000},
 }
 
 try:

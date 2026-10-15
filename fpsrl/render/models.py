@@ -1,4 +1,4 @@
-"""Procedural 3D models: weapons, grenades, soldiers and map props.
+"""Procedural 3D models: weapons, grenades and soldiers.
 
 Weapon frame: +Y = barrel direction, +Z = up, origin near the trigger.
 """
@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 from panda3d.core import Material, NodePath, Point3, Quat, Vec3
 
 from .meshes import MeshBuilder
@@ -158,28 +157,6 @@ def build_awm():
                   "fore": Point3(0, 0.36, 0.0), "eject": Point3(0.03, 0.0, 0.07)}
 
 
-def build_deagle():
-    ps = PartSet("deagle")
-    m, c, p = ps.b("metal"), ps.b("chrome"), ps.b("poly")
-    silver = (0.5, 0.5, 0.52, 1)
-    dark = (0.08, 0.08, 0.085, 1)
-    c.box((-0.014, -0.035, 0.03), (0.014, 0.2, 0.068), silver)
-    for i in range(6):
-        y = -0.03 + i * 0.008
-        m.box((-0.0148, y, 0.036), (0.0148, y + 0.003, 0.064), dark)
-    c.box((-0.013, -0.03, 0.0), (0.013, 0.18, 0.03), (0.38, 0.38, 0.4, 1))
-    m.cylinder((0, 0.2, 0.05), (0, 0.2015, 0.05), 0.007, (0.01, 0.01, 0.01, 1), 10)
-    obox(p, (0, -0.022, -0.05), (0.03, 0.052, 0.115), (0, -14, 0), (0.06, 0.06, 0.06, 1))
-    _trigger_group(m, dark, 0.0, 0.055)
-    m.box((-0.003, 0.185, 0.068), (0.003, 0.195, 0.079), dark)
-    m.box((-0.009, -0.03, 0.068), (-0.003, -0.02, 0.078), dark)
-    m.box((0.003, -0.03, 0.068), (0.009, -0.02, 0.078), dark)
-    m.box((-0.005, -0.048, 0.04), (0.005, -0.035, 0.06), dark)
-    node = ps.node()
-    return node, {"muzzle": Point3(0, 0.205, 0.05), "sight_z": 0.0795, "grip": Point3(0, -0.022, -0.03),
-                  "fore": Point3(-0.01, -0.01, -0.05), "eject": Point3(0.02, 0.06, 0.06)}
-
-
 def build_knife():
     ps = PartSet("knife")
     m, c, p = ps.b("metal"), ps.b("chrome"), ps.b("poly")
@@ -237,35 +214,87 @@ def build_molotov():
     return ps.node(), {}
 
 
-WEAPON_BUILDERS = {"ak47": build_ak47, "awm": build_awm, "deagle": build_deagle,
-                   "knife": build_knife, "frag": build_frag, "smoke": build_smoke, "molotov": build_molotov}
+_BLACK = (0.07, 0.07, 0.075, 1)
+_DARK = (0.12, 0.12, 0.13, 1)
+_STEEL = (0.2, 0.2, 0.21, 1)
 
 
-def _builder(name: str):
-    if name in WEAPON_BUILDERS:
-        return WEAPON_BUILDERS[name]
-    from .guns import GUN_BUILDERS
-    return GUN_BUILDERS[name]
+def _info(muzzle, sight_z, grip=(0, -0.035, -0.03), fore=(0, 0.25, 0.0), eject=(0.03, 0.05, 0.06)):
+    return {"muzzle": Point3(*muzzle), "sight_z": sight_z, "grip": Point3(*grip), "fore": Point3(*fore),
+            "eject": Point3(*eject)}
+
+
+def build_glock():
+    ps = PartSet("glock")
+    m, p = ps.b("metal"), ps.b("poly")
+    poly = (0.13, 0.13, 0.14, 1)
+    slide = (0.18, 0.18, 0.19, 1)
+    m.box((-0.013, -0.025, 0.03), (0.013, 0.15, 0.056), slide)          # squared slide
+    for i in range(4):
+        y = -0.022 + i * 0.006
+        m.box((-0.0136, y, 0.034), (0.0136, y + 0.002, 0.052), _BLACK)  # rear serrations
+    m.cylinder((0, 0.15, 0.043), (0, 0.172, 0.043), 0.006, _BLACK, 10)  # barrel
+    p.box((-0.014, -0.01, 0.0), (0.014, 0.135, 0.032), poly)            # frame
+    p.box((-0.01, 0.07, -0.008), (0.01, 0.125, 0.0), _BLACK)            # accessory rail
+    obox(p, (0, -0.012, -0.048), (0.028, 0.042, 0.1), (0, -20, 0), poly)
+    p.box((-0.015, -0.028, -0.105), (0.015, 0.012, -0.092), _BLACK)     # magazine floorplate
+    _trigger_group(m, _BLACK, 0.03, 0.075)
+    m.box((-0.003, 0.155, 0.056), (0.003, 0.163, 0.066), _BLACK)        # front sight
+    m.box((-0.011, -0.012, 0.056), (-0.004, -0.002, 0.064), _BLACK)     # rear sight notch
+    m.box((0.004, -0.012, 0.056), (0.011, -0.002, 0.064), _BLACK)
+    return ps.node(), _info((0, 0.175, 0.043), 0.066, grip=(0, -0.012, -0.03), fore=(-0.01, 0.04, -0.04),
+                            eject=(0.016, 0.05, 0.05))
+
+
+def build_nova():
+    ps = PartSet("nova")
+    m, w = ps.b("metal"), ps.b("wood")
+    wood = (0.38, 0.22, 0.11, 1)
+    m.box((-0.024, -0.1, 0.0), (0.024, 0.14, 0.068), _BLACK)             # receiver
+    m.box((0.024, -0.02, 0.025), (0.03, 0.08, 0.055), _STEEL)            # loading / ejection port
+    m.cylinder((0, 0.14, 0.05), (0, 0.66, 0.05), 0.013, _BLACK, 14)      # barrel
+    m.cylinder((0, 0.14, 0.018), (0, 0.6, 0.018), 0.012, _DARK, 12)      # magazine tube
+    m.cylinder((0, 0.6, 0.018), (0, 0.615, 0.018), 0.014, _BLACK, 12)    # tube cap
+    m.box((-0.006, 0.585, 0.024), (0.006, 0.62, 0.05), _BLACK)           # barrel clamp
+    m.box((-0.003, 0.64, 0.063), (0.003, 0.65, 0.074), (0.75, 0.6, 0.2, 1))  # bead sight
+    m.box((-0.01, -0.08, 0.068), (0.01, 0.12, 0.076), _DARK)             # top rib
+    w.box((-0.026, 0.2, -0.004), (0.026, 0.36, 0.04), wood)              # pump
+    for k in range(5):
+        y = 0.215 + k * 0.03
+        w.box((-0.0275, y, 0.0), (0.0275, y + 0.01, 0.036), (0.3, 0.17, 0.08, 1))
+    obox(w, (0, -0.035, -0.05), (0.03, 0.038, 0.11), (0, -22, 0), wood)  # pistol grip
+    _trigger_group(m, _BLACK)
+    w.tapered(-0.42, -0.1, 0.045, 0.125, 0.04, 0.07, -0.08, -0.005, wood)  # stock
+    m.box((-0.024, -0.43, -0.08), (0.024, -0.415, 0.05), _BLACK)         # recoil pad
+    return ps.node(), _info((0, 0.665, 0.05), 0.076, fore=(0, 0.28, -0.0), eject=(0.035, 0.03, 0.04))
+
+
+def build_flash():
+    ps = PartSet("flash")
+    m, p = ps.b("metal"), ps.b("paint")
+    p.cylinder((0, 0, -0.055), (0, 0, 0.05), 0.028, (0.25, 0.27, 0.3, 1), 16)
+    for z in (-0.03, 0.0, 0.03):
+        p.cylinder((0, 0, z - 0.003), (0, 0, z + 0.003), 0.029, (0.12, 0.14, 0.16, 1), 16)
+    m.cylinder((0, 0, 0.05), (0, 0, 0.066), 0.015, (0.5, 0.5, 0.48, 1), 12)
+    obox(m, (0.028, 0, 0.02), (0.006, 0.016, 0.08), (0, 0, -8), (0.5, 0.5, 0.48, 1))
+    return ps.node(), {}
+
+
+WEAPON_BUILDERS = {"ak47": build_ak47, "awm": build_awm, "nova": build_nova, "glock": build_glock,
+                   "knife": build_knife, "frag": build_frag, "smoke": build_smoke, "flash": build_flash,
+                   "molotov": build_molotov}
 
 
 class ModelCache:
     def __init__(self):
         self._cache = {}
 
-    def weapon(self, name: str, skin: str | None = None):
-        from .skins import apply_skin, get_skin
-        sk = get_skin(name, skin)
-        key = (name, sk.key)
-        if key not in self._cache:
-            node, info = _builder(name)()
-            if sk.key == "default":
-                node.flattenStrong()
-            else:
-                for child in node.getChildren():
-                    child.flattenStrong()
-                apply_skin(node, sk)
-            self._cache[key] = (node, info)
-        node, info = self._cache[key]
+    def weapon(self, name: str):
+        if name not in self._cache:
+            node, info = WEAPON_BUILDERS[name]()
+            node.flattenStrong()
+            self._cache[name] = (node, info)
+        node, info = self._cache[name]
         return node.copyTo(NodePath(name)), info
 
 
@@ -376,9 +405,7 @@ class SoldierModel:
             self.legs[side] = (hip, knee)
 
         self.weapon_np = None
-        self.offhand_np = None
         self.weapon_name = None
-        self.weapon_skin = None
         self.phase = 0.0
         self.set_weapon("ak47")
 
@@ -389,36 +416,25 @@ class SoldierModel:
             node.lookAt(b)
             node.setSy(max((b - a).length(), 1e-3))
 
-    def set_weapon(self, name: str, skin: str | None = None):
-        if (name, skin) == (self.weapon_name, self.weapon_skin):
+    def set_weapon(self, name: str):
+        if name == self.weapon_name:
             return
         if self.weapon_np is not None:
             self.weapon_np.removeNode()
         self.weapon_name = name
-        self.weapon_skin = skin
         from ..weapons import SLOT_PRIMARY, WEAPONS
-        node, info = self.models.weapon(name, skin)
+        node, info = self.models.weapon(name)
         node.reparentTo(self.gun_mount)
         self.weapon_np = node
-        if self.offhand_np is not None:
-            self.offhand_np.removeNode()
-            self.offhand_np = None
         spec = WEAPONS.get(name)
         style = "item"
-        if spec is not None:
-            if spec.kind == "gun":
-                style = "dual" if spec.dual else ("long" if spec.slot == SLOT_PRIMARY else "pistol")
-            elif name == "hammer":
-                style = "long"
-            elif spec.kind == "shield":
-                style = "shield"
+        if spec is not None and spec.kind == "gun":
+            style = "long" if spec.slot == SLOT_PRIMARY else "pistol"
         grip = info.get("grip", Point3(0, 0, 0))
         if style == "long":
             hand_r = Point3(0.12, 0.3, -0.08)
-        elif style in ("pistol", "shield"):
+        elif style == "pistol":
             hand_r = Point3(0.06, 0.42, 0.0)
-        elif style == "dual":
-            hand_r = Point3(0.14, 0.42, 0.0)
         else:
             hand_r = Point3(0.2, 0.3, -0.12)
         self.gun_mount.setPos(hand_r - grip)
@@ -429,18 +445,6 @@ class SoldierModel:
         elif style == "pistol":
             hand_l = hand_r + Point3(-0.05, -0.01, -0.02)
             elbow_l = Point3(-0.18, 0.18, -0.2)
-        elif style == "dual":
-            hand_l = Point3(-0.14, 0.42, 0.0)
-            elbow_l = Point3(-0.24, 0.16, -0.2)
-            off, _ = self.models.weapon(name, skin)
-            off.reparentTo(self.arms)
-            off.setPos(hand_l - grip)
-            self.offhand_np = off
-        elif style == "shield":
-            hand_l = Point3(-0.12, 0.38, -0.05)
-            elbow_l = Point3(-0.24, 0.14, -0.2)
-            self.gun_mount.setPos(hand_l - grip + Point3(0.08, 0.06, 0))
-            hand_r = Point3(0.12, 0.3, -0.15)
         else:
             hand_l = Point3(-0.24, 0.12, -0.42)
             elbow_l = Point3(-0.25, 0.02, -0.2)
@@ -479,250 +483,5 @@ class SoldierModel:
         self.head.setP(pitch * 0.3)
 
 
-# ----------------------------------------------------------------------------- zombie
-ZOMBIE_STYLE = {
-    "zombie": dict(shirt=(0.35, 0.1, 0.08, 1), pants=(0.22, 0.08, 0.07, 1), vest=(0.2, 0.06, 0.05, 1),
-                   head=(0.5, 0.09, 0.07, 1), helmet=None, accent=(0.9, 0.2, 0.1, 1),
-                   skin=(0.62, 0.12, 0.1, 1), gear=False),
-    "mother": dict(shirt=(0.2, 0.04, 0.04, 1), pants=(0.14, 0.03, 0.03, 1), vest=(0.12, 0.02, 0.02, 1),
-                   head=(0.36, 0.04, 0.04, 1), helmet=None, accent=(1.0, 0.3, 0.1, 1),
-                   skin=(0.45, 0.05, 0.05, 1), gear=False),
-}
-CLAW = (0.86, 0.8, 0.62, 1)
-CLAW_DARK = (0.55, 0.12, 0.08, 1)
-
-
-def build_claw(dark: bool = False, scale: float = 1.0) -> NodePath:
-    """Three curved talons along +Y from a knuckle at the origin (hand frame)."""
-    ps = PartSet("claw")
-    bone = ps.b("chrome")
-    col = CLAW_DARK if dark else CLAW
-    s = scale
-    for x in (-0.026, 0.0, 0.026):
-        bone.tapered(0.03 * s, 0.13 * s, 0.016 * s, 0.018 * s, 0.009 * s, 0.01 * s, -0.01 * s, -0.004 * s, col, x=x * s)
-        bone.tapered(0.13 * s, 0.2 * s, 0.009 * s, 0.01 * s, 0.001 * s, 0.002 * s, -0.004 * s, -0.022 * s, col,
-                     x=x * s)
-    ps.b("skin").box((-0.045 * s, 0.0, -0.025 * s), (0.045 * s, 0.04 * s, 0.025 * s), (0.4, 0.07, 0.06, 1))
-    return ps.node()
-
-
-class ZombieModel(SoldierModel):
-    """Red-skinned infected: no gear, glowing eyes, fangs and claws instead of a weapon.
-
-    Same skeleton and proportions as `SoldierModel`, so it lines up with the hit boxes."""
-
-    def __init__(self, models: ModelCache, mother: bool = False):
-        self.mother = mother
-        super().__init__(1, models, style=ZOMBIE_STYLE["mother" if mother else "zombie"])
-        self.root.setName("zombie_mother" if mother else "zombie")
-        ps = PartSet("zombie_face")
-        g = ps.b("glass")
-        eye = (1.0, 0.55, 0.1, 1) if mother else (1.0, 0.85, 0.2, 1)
-        g.box((-0.065, 0.111, 0.165), (-0.015, 0.122, 0.192), eye)
-        g.box((0.015, 0.111, 0.165), (0.065, 0.122, 0.192), eye)
-        tooth = ps.b("chrome")
-        for x in (-0.04, -0.015, 0.015, 0.04):
-            tooth.box((x - 0.007, 0.104, 0.07), (x + 0.007, 0.118, 0.105), CLAW)
-        ps.b("skin").box((-0.06, 0.1, 0.1), (0.06, 0.12, 0.115), (0.15, 0.02, 0.02, 1))  # open mouth
-        face = ps.node()
-        face.reparentTo(self.head)
-        eyes = face.find("**/zombie_face_glass")
-        if not eyes.isEmpty():
-            eyes.setLightOff(1)
-        if mother:
-            ps = PartSet("spikes")
-            b = ps.b("chrome")
-            for x, z, h in ((-0.15, 0.48, 0.16), (0.15, 0.48, 0.16), (0.0, 0.42, 0.2), (-0.07, 0.3, 0.13),
-                            (0.07, 0.3, 0.13), (0.0, 0.18, 0.11)):
-                b.cylinder((x, -0.12, z), (x * 1.3, -0.12 - h, z + h * 0.6), 0.03, CLAW_DARK, 6, radius1=0.002)
-            ps.node().reparentTo(self.spine)
-        for side in ("r", "l"):
-            c = build_claw(mother, 1.25 if mother else 1.0)
-            c.reparentTo(self.limbs[side + "_hand"])
-            c.setPos(0, 0.04, 0)
-
-    def set_weapon(self, name: str, skin: str | None = None):
-        """Ignore the knife: both arms reach forward, claws out."""
-        if self.weapon_name == "claws":
-            return
-        self.weapon_name, self.weapon_skin = "claws", None
-        hand_r, hand_l = Point3(0.2, 0.44, 0.04), Point3(-0.2, 0.4, -0.02)
-        self._place_limb(self.limbs["r_upper"], self.limbs["r_fore"], (0.21, 0.0, 0.0),
-                         (0.28, 0.2, -0.14), hand_r)
-        self._place_limb(self.limbs["l_upper"], self.limbs["l_fore"], (-0.21, 0.0, 0.0),
-                         (-0.28, 0.18, -0.18), hand_l)
-        self.limbs["r_hand"].setPos(hand_r)
-        self.limbs["l_hand"].setPos(hand_l)
-
-    def pose(self, dt, speed, crouch, pitch, on_ground, lean=0.0):
-        super().pose(dt, speed, crouch, pitch, on_ground, lean)
-        self.spine.setP(self.spine.getP() - 12.0)  # hunched forward, head craned back up
-        self.head.setP(self.head.getP() + 10.0)
-
-
-def body_model(kind: str, team: int, models: ModelCache) -> SoldierModel:
-    """Third-person body for a bio `role` (human / zombie / mother)."""
-    if kind in ("zombie", "mother"):
-        return ZombieModel(models, mother=kind == "mother")
+def body_model(team: int, models: ModelCache) -> SoldierModel:
     return SoldierModel(team, models)
-
-
-# ----------------------------------------------------------------------------- props
-def build_barrel(color: str) -> NodePath:
-    cols = {"blue": (0.12, 0.25, 0.55, 1), "red": (0.6, 0.12, 0.08, 1)}
-    c = cols.get(color, (0.3, 0.3, 0.3, 1))
-    ps = PartSet("barrel")
-    p = ps.b("paint")
-    p.cylinder((0, 0, 0), (0, 0, 0.9), 0.29, c, 20)
-    for z in (0.02, 0.3, 0.6, 0.88):
-        p.cylinder((0, 0, z - 0.012), (0, 0, z + 0.012), 0.3, (c[0] * 0.7, c[1] * 0.7, c[2] * 0.7, 1), 20)
-    p.cylinder((0.12, 0, 0.9), (0.12, 0, 0.915), 0.03, (0.4, 0.4, 0.4, 1), 8)
-    return ps.node()
-
-
-def build_lamp() -> tuple[NodePath, NodePath]:
-    ps = PartSet("lamp")
-    m = ps.b("paint")
-    gray = (0.55, 0.56, 0.55, 1)
-    m.cylinder((0, 0, 0), (0, 0, 2.6), 0.045, gray, 10)
-    m.cylinder((0, 0, 2.6), (0, -0.7, 2.75), 0.035, gray, 8)
-    m.box((-0.14, -0.95, 2.66), (0.14, -0.6, 2.8), (0.25, 0.25, 0.25, 1))
-    node = ps.node()
-    bulb = MeshBuilder("bulb")
-    bulb.box((-0.12, -0.93, 2.645), (0.12, -0.62, 2.665), (1.0, 0.92, 0.7, 1))
-    bulb_np = bulb.node()
-    bulb_np.reparentTo(node)
-    return node, bulb_np
-
-
-def build_crane_boom() -> NodePath:
-    ps = PartSet("crane")
-    m = ps.b("paint")
-    y = (0.85, 0.65, 0.1, 1)
-    m.box((-0.9, -0.9, 0), (0.9, 0.9, 1.8), (0.8, 0.6, 0.1, 1))
-    m.box((-0.6, 0.9, 0.3), (0.6, 1.9, 1.5), (0.85, 0.85, 0.82, 1))  # cab
-    gl = ps.b("glass")
-    gl.box((-0.5, 1.9, 0.8), (0.5, 1.92, 1.4), (0.1, 0.15, 0.2, 1))
-    # lattice boom along +Y, raised 25 degrees
-    L = 16.0
-    ang = math.radians(22)
-    for sx in (-0.35, 0.35):
-        for sz in (0.0, 0.6):
-            p0 = (sx, 0.5, 1.2 + sz)
-            p1 = (sx, 0.5 + L * math.cos(ang), 1.2 + sz + L * math.sin(ang))
-            m.cylinder(p0, p1, 0.06, y, 8)
-    for k in range(1, 16):
-        t = k / 16
-        yy = 0.5 + L * math.cos(ang) * t
-        zz = 1.2 + L * math.sin(ang) * t
-        m.cylinder((-0.35, yy, zz), (0.35, yy, zz + 0.6), 0.03, y, 6)
-        m.cylinder((0.35, yy, zz), (-0.35, yy, zz + 0.6), 0.03, y, 6)
-    m.cylinder((0, 0.5 + L * math.cos(ang), 1.2 + L * math.sin(ang)),
-               (0, 0.5 + L * math.cos(ang), -4.0), 0.012, (0.1, 0.1, 0.1, 1), 4)
-    m.box((-0.2, 0.3 + L * math.cos(ang), -4.4), (0.2, 0.7 + L * math.cos(ang), -4.0), (0.8, 0.2, 0.1, 1))
-    return ps.node()
-
-
-def build_antenna() -> NodePath:
-    ps = PartSet("antenna")
-    m = ps.b("paint")
-    w = (0.85, 0.85, 0.82, 1)
-    m.cylinder((0, 0, 0), (0, 0, 6.0), 0.08, w, 8)
-    for z, l in ((3.0, 1.6), (4.5, 1.2), (5.6, 0.8)):
-        m.cylinder((-l, 0, z), (l, 0, z), 0.04, w, 6)
-    m.sphere((0, 0, 6.1), 0.15, (0.9, 0.15, 0.1, 1), 6, 8)
-    return ps.node()
-
-
-def build_radar() -> tuple[NodePath, NodePath]:
-    ps = PartSet("radar")
-    m = ps.b("paint")
-    m.cylinder((0, 0, 0), (0, 0, 1.6), 0.18, (0.85, 0.85, 0.82, 1), 10)
-    node = ps.node()
-    bar = PartSet("radar_bar")
-    bar.b("paint").box((-1.6, -0.12, -0.08), (1.6, 0.12, 0.08), (0.9, 0.9, 0.88, 1))
-    bar_np = bar.node()
-    bar_np.reparentTo(node)
-    bar_np.setZ(1.7)
-    return node, bar_np
-
-
-def build_tree(seed: int = 0, autumn: bool = False) -> NodePath:
-    rng = np.random.default_rng(seed)
-    ps = PartSet("tree")
-    ps.b("wood").cylinder((0, 0, 0), (0, 0, 2.4), 0.16, (0.32, 0.22, 0.14, 1), 10, radius1=0.11)
-    leaf = ps.b("cloth")
-    for _ in range(5):
-        if autumn:
-            c = (0.82 + rng.uniform(0, 0.1), 0.6 + rng.uniform(0, 0.12), 0.12, 1)
-        else:
-            c = (0.18 + rng.uniform(0, 0.08), 0.32 + rng.uniform(0, 0.12), 0.1, 1)
-        leaf.sphere((rng.uniform(-0.6, 0.6), rng.uniform(-0.6, 0.6), 2.6 + rng.uniform(0, 1.2)),
-                    rng.uniform(0.8, 1.2), c, 6, 9)
-    return ps.node()
-
-
-def build_palm(seed: int = 0) -> NodePath:
-    rng = np.random.default_rng(seed)
-    ps = PartSet("palm")
-    trunk = ps.b("wood")
-    lean = rng.uniform(-0.5, 0.5, 2)
-    top = (lean[0], lean[1], 5.5)
-    trunk.cylinder((0, 0, 0), top, 0.18, (0.48, 0.38, 0.26, 1), 8, radius1=0.12)
-    leaf = ps.b("cloth")
-    for k in range(8):
-        a = k * math.pi / 4 + rng.uniform(-0.2, 0.2)
-        end = (top[0] + math.cos(a) * 2.2, top[1] + math.sin(a) * 2.2, top[2] - 0.9)
-        mid = (top[0] + math.cos(a) * 1.1, top[1] + math.sin(a) * 1.1, top[2] + 0.2)
-        g = (0.2, 0.38 + rng.uniform(0, 0.1), 0.12, 1)
-        leaf.cylinder(top, mid, 0.22, g, 4, radius1=0.18)
-        leaf.cylinder(mid, end, 0.18, g, 4, radius1=0.02)
-    return ps.node()
-
-
-def build_car(color=(0.6, 0.12, 0.1)) -> NodePath:
-    ps = PartSet("car")
-    p = ps.b("paint")
-    c = (*color, 1)
-    p.box((-2.1, -0.85, 0.3), (2.1, 0.85, 0.95), c)
-    p.box((-1.1, -0.78, 0.95), (1.0, 0.78, 1.45), c)
-    ps.b("glass").box((-1.05, -0.8, 1.0), (0.95, 0.8, 1.4), (0.1, 0.13, 0.18, 1))
-    dark = (0.06, 0.06, 0.06, 1)
-    for x in (-1.35, 1.35):
-        for y in (-0.82, 0.82):
-            ps.b("poly").cylinder((x, y - 0.1, 0.32), (x, y + 0.1, 0.32), 0.32, dark, 12)
-    p.box((2.1, -0.7, 0.6), (2.14, -0.4, 0.75), (1.0, 0.95, 0.8, 1))
-    p.box((2.1, 0.4, 0.6), (2.14, 0.7, 0.75), (1.0, 0.95, 0.8, 1))
-    return ps.node()
-
-
-def build_ceiling_light() -> tuple[NodePath, NodePath]:
-    ps = PartSet("clight")
-    ps.b("metal").box((-0.6, -0.15, 0.0), (0.6, 0.15, 0.06), (0.6, 0.6, 0.6, 1))
-    node = ps.node()
-    bulb = MeshBuilder("cbulb")
-    bulb.box((-0.55, -0.11, -0.01), (0.55, 0.11, 0.0), (1.0, 0.97, 0.88, 1))
-    b = bulb.node()
-    b.reparentTo(node)
-    return node, b
-
-
-def build_desk() -> NodePath:
-    ps = PartSet("desk")
-    w = ps.b("wood")
-    col = (0.42, 0.28, 0.16, 1)
-    w.box((-0.8, -0.4, 0.72), (0.8, 0.4, 0.77), col)
-    w.box((-0.78, -0.38, 0.0), (-0.7, 0.38, 0.72), col)
-    w.box((0.7, -0.38, 0.0), (0.78, 0.38, 0.72), col)
-    ps.b("poly").box((-0.25, -0.05, 0.77), (0.25, 0.02, 1.1), (0.08, 0.08, 0.09, 1))
-    return ps.node()
-
-
-def build_door() -> NodePath:
-    ps = PartSet("door")
-    m = ps.b("paint")
-    m.box((0.0, -0.65, 0.0), (0.06, 0.65, 2.2), (0.3, 0.33, 0.35, 1))
-    m.box((0.06, -0.55, 0.1), (0.09, 0.55, 2.05), (0.4, 0.43, 0.45, 1))
-    m.box((0.09, 0.3, 1.0), (0.14, 0.42, 1.06), (0.7, 0.7, 0.7, 1))
-    ps.b("glass").box((0.09, -0.25, 1.4), (0.1, 0.25, 1.85), (0.1, 0.14, 0.2, 1))
-    return ps.node()

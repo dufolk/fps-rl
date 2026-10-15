@@ -8,56 +8,38 @@ from panda3d.core import (AmbientLight, AntialiasAttrib, Camera, DirectionalLigh
                           PointLight, Vec3, Vec4)
 
 from ..weapons import WEAPONS
-from .viewer import gold_tint
 from .effects import _additive, _card
 from .meshes import MeshBuilder
-from .models import GLOVE, TEAM_STYLE, ZOMBIE_STYLE, PartSet, build_claw
-
-CLAW_HOLDERS = ("claws", "claws_mother")  # bio zombies swing these instead of the knife
+from .models import GLOVE, TEAM_STYLE, PartSet
 
 HIP = {
     "ak47": (Point3(0.15, 0.62, -0.2), Vec3(2.0, 0, 0)),
     "awm": (Point3(0.15, 0.66, -0.205), Vec3(2.0, 0, 0)),
-    "deagle": (Point3(0.13, 0.52, -0.17), Vec3(2.5, 0, 0)),
     "knife": (Point3(0.13, 0.4, -0.1), Vec3(40, 25, -15)),
-    "claws": (Point3(0.04, 0.56, -0.14), Vec3(0, 10, 0)),
-    "claws_mother": (Point3(0.04, 0.56, -0.14), Vec3(0, 10, 0)),
     "frag": (Point3(0.13, 0.46, -0.105), Vec3(-15, 10, 0)),
     "smoke": (Point3(0.13, 0.46, -0.105), Vec3(-15, 10, 0)),
 }
-ADS_Y = {"ak47": 0.38, "awm": 0.3, "deagle": 0.42}
+ADS_Y = {"ak47": 0.38, "awm": 0.3}
 STYLE_HIP = {
     "long": (Point3(0.15, 0.62, -0.2), Vec3(2.0, 0, 0)),
     "pistol": (Point3(0.13, 0.52, -0.17), Vec3(2.5, 0, 0)),
-    "dual": (Point3(0.13, 0.5, -0.17), Vec3(0.0, 0, 0)),
     "melee": (Point3(0.13, 0.4, -0.1), Vec3(40, 25, -15)),
-    "shield": (Point3(-0.05, 0.62, -0.12), Vec3(8, 0, 0)),
     "item": (Point3(0.13, 0.46, -0.105), Vec3(-15, 10, 0)),
 }
 STYLE_ADS_Y = {"long": 0.36, "pistol": 0.42}
-KICK = {"rifle": 1.0, "smg": 0.75, "heavy": 1.15, "pistol": 1.6, "sniper": 1.8}
+KICK = {"awm": 2.6, "glock": 1.1, "nova": 2.3}
 
 
 def _style(spec) -> str:
     if spec.kind == "gun":
-        if spec.dual:
-            return "dual"
         return "pistol" if spec.category == "pistol" else "long"
     if spec.kind == "melee":
         return "melee"
-    if spec.kind == "shield":
-        return "shield"
     return "item"
 
 
 def _hip(name, style):
-    if name in HIP:
-        return HIP[name]
-    if name == "hammer":
-        return Point3(0.16, 0.42, -0.22), Vec3(20, 30, -10)
-    if name in ("scar20",):
-        return Point3(0.15, 0.66, -0.205), Vec3(2.0, 0, 0)
-    return STYLE_HIP[style]
+    return HIP.get(name) or STYLE_HIP[style]
 
 # inspect keyframes: (time, position offset, hpr offset)
 INSPECT = {
@@ -127,11 +109,10 @@ def _arm(ps, hand, elbow_dir, sleeve, length=0.42):
 
 
 class ViewModel:
-    def __init__(self, base, models, team: int, fov: float = 56.0, skins: dict | None = None):
+    def __init__(self, base, models, team: int, fov: float = 56.0):
         self.base = base
         self.models = models
         self.team = team
-        self.skins = dict(skins or {})
         self.guns = {}
         self.root = NodePath("vm_root")
         lens = PerspectiveLens()
@@ -165,14 +146,11 @@ class ViewModel:
         self.holders = {}
         self.infos = {}
         self.flashes = {}
-        self.duals = {}  # name -> (right gun node, left gun node)
         self.styles = {}
-        self.dual_side = 0
-        self.dual_kick = [0.0, 0.0]
         self.sleeve = TEAM_STYLE[team]["shirt"]
         self.flash_tex = base_textures(base).sprite("flash")
         self.side_tex = base_textures(base).sprite("flash_side")
-        for name in ("ak47", "awm", "deagle", "knife", "frag", "smoke", "flash", "molotov"):
+        for name in WEAPONS:
             self._ensure(name)
         # shell casings
         self.casings = []
@@ -223,43 +201,15 @@ class ViewModel:
         fl.hide()
         return fl
 
-    def _ensure_claws(self, name: str):
-        """Two bare red forearms with talons (holder frame: +Y forward)."""
-        if name in self.holders:
-            return
-        mother = name == "claws_mother"
-        st = ZOMBIE_STYLE["mother" if mother else "zombie"]
-        holder = self.pivot.attachNewNode(name)
-        ps = PartSet("arms_" + name)
-        skin = ps.b("skin")
-        for x, d in ((0.11, Vec3(0.3, -0.75, -0.5)), (-0.19, Vec3(-0.3, -0.75, -0.5))):
-            hand = Point3(x, 0.0, 0.0)
-            d.normalize()
-            skin.cbox(hand + Vec3(0, -0.02, -0.01), (0.042, 0.05, 0.036), st["skin"])
-            skin.cylinder(hand + d * 0.03, hand + d * 0.42, 0.034, st["skin"], 10, radius1=0.042)
-            ps.b("cloth").cylinder(hand + d * 0.3, hand + d * 0.46, 0.046, st["shirt"], 10, radius1=0.05)
-            claw = build_claw(mother, 1.3 if mother else 1.12)
-            claw.reparentTo(holder)
-            claw.setPos(hand + Vec3(0, -0.015, 0))
-            claw.setHpr(-12 if x > 0 else 12, 20, 0)  # talons angled up and in so they read from behind
-        ps.node().reparentTo(holder)
-        holder.hide()
-        self.holders[name] = holder
-        self.infos[name] = {}
-        self.styles[name] = "melee"
-
     def _ensure(self, name: str):
         """Build the holder (gun + arms + muzzle flash) for `name` on first use."""
         if name in self.holders:
-            return
-        if name in CLAW_HOLDERS:
-            self._ensure_claws(name)
             return
         spec = WEAPONS[name]
         style = _style(spec)
         self.styles[name] = style
         holder = self.pivot.attachNewNode(name)
-        gun, info = self.models.weapon(name, self.skins.get(name))
+        gun, info = self.models.weapon(name)
         gun.reparentTo(holder)
         self.guns[name] = gun
         ps = PartSet("arms_" + name)
@@ -271,20 +221,8 @@ class ViewModel:
         elif style == "pistol":
             _arm(ps, grip + Vec3(0.01, 0, -0.01), (0.2, -0.75, -0.5), sleeve)
             _arm(ps, grip + Vec3(-0.03, 0.01, -0.025), (-0.55, -0.6, -0.5), sleeve)
-        elif style == "dual":
-            gun.setX(0.0)
-            left, _ = self.models.weapon(name, self.skins.get(name))
-            left.reparentTo(holder)
-            left.setX(-0.26)
-            self.duals[name] = (gun, left)
-            _arm(ps, grip + Vec3(0.01, 0, -0.01), (0.25, -0.75, -0.5), sleeve)
-            _arm(ps, grip + Vec3(-0.25, 0, -0.01), (-0.25, -0.75, -0.5), sleeve)
         elif style == "melee":
             _arm(ps, grip, (0.2, -0.85, -0.45), sleeve)
-            if name == "hammer":
-                _arm(ps, info["fore"] + Vec3(-0.02, 0, 0), (-0.4, -0.7, -0.5), sleeve)
-        elif style == "shield":
-            _arm(ps, grip + Vec3(0.0, -0.02, -0.05), (-0.2, -0.8, -0.5), sleeve)
         else:
             _arm(ps, (0.0, -0.01, -0.035), (0.25, -0.75, -0.55), sleeve)
         ps.node().reparentTo(holder)
@@ -292,35 +230,16 @@ class ViewModel:
         self.holders[name] = holder
         self.infos[name] = info
         if spec.kind == "gun":
-            small = style in ("pistol", "dual") or spec.silenced
-            if style == "dual":
-                self.flashes[name] = [self._make_flash(gun, info["muzzle"], True),
-                                      self._make_flash(left, info["muzzle"], True)]
-            else:
-                fl = self._make_flash(holder, info["muzzle"], small)
-                if spec.silenced:
-                    fl.setScale(0.45)
-                self.flashes[name] = [fl]
+            self.flashes[name] = [self._make_flash(holder, info["muzzle"], style == "pistol")]
 
     def set_aspect(self, aspect: float):
         self.lens.setAspectRatio(aspect)
-
-    def set_skins(self, skins: dict):
-        changed = [n for n in self.holders if skins.get(n) != self.skins.get(n)]
-        self.skins = dict(skins)
-        for name in changed:
-            self.holders.pop(name).removeNode()
-            self.guns.pop(name, None)
-            self.flashes.pop(name, None)
-            self.duals.pop(name, None)
-            if self.current == name:
-                self.current = None
 
     def inspect(self) -> bool:
         """Start the inspect animation for the current weapon (F key)."""
         if self.current is None or (self.anim and self.anim[0] not in ("inspect",)):
             return False
-        kind = "melee" if self.current in CLAW_HOLDERS else WEAPONS[self.current].kind
+        kind = WEAPONS[self.current].kind
         kind = "gun" if kind == "gun" else "knife" if kind == "melee" else "grenade"
         self.inspect_kind = kind
         self._play("inspect", INSPECT[kind][-1][0])
@@ -347,13 +266,8 @@ class ViewModel:
         if t == "shot":
             spec = WEAPONS[e["weapon"]]
             self._ensure(e["weapon"])
-            k = {"awm": 2.6, "deagle": 1.8, "glock": 1.1, "nova": 2.3}.get(e["weapon"], KICK.get(spec.category, 1.0))
+            k = KICK.get(e["weapon"], 1.0)
             fls = self.flashes.get(e["weapon"], [])
-            if spec.dual:
-                self.dual_side ^= 1
-                self.dual_kick[self.dual_side] = 1.0
-                k *= 0.5
-                fls = fls[self.dual_side:self.dual_side + 1]
             self.kick = min(self.kick + k, 3.2)
             self.kick_roll = random.uniform(-1, 1)
             self.flash_t = 0.045
@@ -362,9 +276,8 @@ class ViewModel:
             self.active_flash = fls
             for fl in fls:
                 fl.setR(random.uniform(0, 360))
-                base_s = 0.45 if spec.silenced else 1.0
-                fl.setScale(base_s * random.uniform(0.85, 1.25))
-            self.flash_light.setColor(Vec4(1.0, 0.7, 0.3, 1) if spec.silenced else Vec4(3.0, 2.0, 0.9, 1))
+                fl.setScale(random.uniform(0.85, 1.25))
+            self.flash_light.setColor(Vec4(3.0, 2.0, 0.9, 1))
             self._eject(e["weapon"])
             self.cancel_inspect()
             if spec.unscope_after_shot:
@@ -375,8 +288,6 @@ class ViewModel:
             self._play("throw", 0.4)
         elif t == "switch":
             self._play("draw", WEAPONS[e["weapon"]].draw_time)
-        elif t in ("busy", "gadget_placed", "launch"):
-            self._play("draw", 0.35)
         elif t == "reload":
             self.cancel_inspect()
         elif t == "land":
@@ -389,8 +300,6 @@ class ViewModel:
         info = self.infos.get(weapon)
         if holder is None or "eject" not in info:
             return
-        if weapon in self.duals:
-            holder = self.duals[weapon][self.dual_side]
         slot = self.casings[self.casing_idx]
         self.casing_idx = (self.casing_idx + 1) % len(self.casings)
         p = self.root.getRelativePoint(holder, info["eject"])
@@ -406,9 +315,6 @@ class ViewModel:
             self.sun_np.setQuat(sun_quat)
         weapon = agent.weapon.name if agent.alive and agent.slot in agent.inv else None
         name = weapon
-        role = getattr(agent, "role", "human")
-        if weapon is not None and role != "human" and WEAPONS[weapon].kind == "melee":
-            name = "claws_mother" if role == "mother" else "claws"
         if name is not None:
             self._ensure(name)
         if name != self.current:
@@ -448,12 +354,6 @@ class ViewModel:
             ads_pos = Point3(0.0, ads_y, -info["sight_z"])
         else:
             ads_pos = hip_pos
-        if name in self.duals:
-            for i, gun in enumerate(self.duals[name]):
-                self.dual_kick[i] *= math.exp(-dt * 18.0)
-                gun.setY(-self.dual_kick[i] * 0.035)
-                gun.setP(self.dual_kick[i] * 9.0)
-            self.duals[name][1].setX(-0.26)
         a = self.ads_blend
         pos = hip_pos * (1 - a) + ads_pos * a
         hpr = Vec3(hip_hpr) * (1 - a)
@@ -473,7 +373,7 @@ class ViewModel:
 
         if agent.reloading:
             p = 1.0 - (agent.reload_until - now) / spec.reload_time
-            dp, dh = _reload_pose(p, 0.75 if style in ("pistol", "dual") else 1.0)
+            dp, dh = _reload_pose(p, 0.75 if style == "pistol" else 1.0)
             pos += dp
             hpr += dh
         if agent.ads or agent.reloading:
@@ -518,14 +418,10 @@ class ViewModel:
                     dp, dh = _inspect_pose(self.inspect_kind, self.anim_t)
                     pos += dp
                     hpr += dh
-        if spec.kind in ("grenade", "gadget") and agent.weapon.mag <= 0:
+        if spec.kind == "grenade" and agent.weapon.mag <= 0:
             holder.hide()
         holder.setPos(pos)
         holder.setHpr(hpr)
-        if world.mode.name == "dom" and now < agent.protect_until:
-            holder.setColorScale(gold_tint(now))
-        else:
-            holder.setColorScale(1, 1, 1, 1)
 
         if self.flash_t > 0:
             self.flash_t -= dt

@@ -14,16 +14,16 @@ import numpy as np
 from gymnasium import spaces
 
 from .bots import Bot
-from .maps import MAPS, resolve_map_mode
+from .maps import MAPS
 from .obs import ObsBuilder, VectorDictObs, vector_dict_space
 from .sim import Action, MatchConfig, World
-from .weapons import NUM_SLOTS, PRIMARY_CHOICES, SLOT_FRAG, SLOT_SMOKE, random_primary
+from .weapons import LOADOUT_BY_KEY, NUM_SLOTS, SLOT_FRAG, SLOT_SMOKE
 
 YAW_BINS = np.array([-30.0, -15.0, -6.0, -2.0, 0.0, 2.0, 6.0, 15.0, 30.0])
 PITCH_BINS = np.array([-10.0, -3.0, 0.0, 3.0, 10.0])
-MD_NVEC = [3, 3, len(YAW_BINS), len(PITCH_BINS), 2, 2, 2, 2, 2, NUM_SLOTS + 1, 3, 2, 2]
+MD_NVEC = [3, 3, len(YAW_BINS), len(PITCH_BINS), 2, 2, 2, 2, 2, NUM_SLOTS + 1, 3]
 ACTION_FIELDS = ["move_forward", "move_right", "look_yaw", "look_pitch", "fire", "alt",
-                 "jump", "crouch", "reload", "switch", "lean", "use", "gadget"]
+                 "jump", "crouch", "reload", "switch", "lean"]
 
 # Eight directions around a center, then walk / run / stop.
 # The last yaw bin is 0 degrees. It does not steer toward an enemy or a throw point.
@@ -58,37 +58,25 @@ class RewardConfig:
     win: float = 3.0
     lose: float = -3.0
     step: float = 0.0
-    # objective modes
     round_win: float = 1.0
     round_lose: float = -1.0
-    capture: float = 0.5        # own team wins a point (x0.3 when the agent was not on it)
-    point_lost: float = -0.25   # enemy wins a point
-    hold: float = 0.0           # per second while the team alone stands in the open point
-    plant: float = 0.8
-    defuse: float = 0.8
-    in_objective: float = 0.0   # per second inside the zone the agent should be in (shaping)
 
 
 @dataclass
 class EnvConfig:
-    map_name: str = "transport_ship"
-    mode: str = "tdm"  # tdm | dom | bomb | elim | r6 (must be listed in the map's modes)
-    mode_params: dict = field(default_factory=dict)
-    learner_auto_buy: bool = True  # bomb mode: controlled agents buy like bots during freeze time
+    map_name: str = "desert2"
+    mode_params: dict = field(default_factory=dict)  # Elimination overrides (freeze_time, win_rounds...)
     team_size: int = 4
     learner_team: int = 0
     tick_rate: int = 60
     action_repeat: int = 4
     max_episode_steps: int = 2250
-    kill_limit: int = 40
-    time_limit: float = 0.0
-    respawn: bool = True
     end_on_death: bool = False
     friendly_fire: bool = False
     bot_difficulty: float | str = "normal"
     teammate_bots: bool = True
-    learner_primary: str = "ak47"
-    bot_primaries: str = "mixed"  # "ak47" | "awm" | "mixed"
+    learner_loadout: str = "random"  # "rifle" | "sniper" | "shotgun" | "random"
+    bot_loadout: str = "random"  # same choices, applied to every bot
     action_type: str = "heads"  # "heads" | "multidiscrete" | "box"
     max_turn_per_step: float = 30.0  # degrees, only for action_type="box"
     obs_mode: str = "vector"  # "vector" (numeric dict) | "flat" (162-d) | "rgb" | "both"
@@ -215,7 +203,7 @@ def decode_action(action, action_type: str, repeat: int, max_turn: float = 30.0,
             move_forward=float(a[0] - 1), move_right=float(a[1] - 1),
             look_yaw=float(YAW_BINS[a[2]]) / repeat, look_pitch=float(PITCH_BINS[a[3]]) / repeat,
             fire=bool(a[4]), alt=bool(a[5]), jump=bool(a[6]), crouch=bool(a[7]),
-            reload=bool(a[8]), switch=int(a[9]), lean=int(a[10]) - 1, use=bool(a[11]), gadget=bool(a[12]),
+            reload=bool(a[8]), switch=int(a[9]), lean=int(a[10]) - 1,
         )
     if action_type != "box":
         raise ValueError(action_type)
@@ -225,7 +213,7 @@ def decode_action(action, action_type: str, repeat: int, max_turn: float = 30.0,
         look_yaw=float(a[2]) * max_turn / repeat, look_pitch=float(a[3]) * max_turn * 0.5 / repeat,
         fire=a[4] > 0, alt=a[5] > 0, jump=a[6] > 0, crouch=a[7] > 0, reload=a[8] > 0,
         switch=int(np.clip(np.round((a[9] + 1.0) * NUM_SLOTS / 2.0), 0, NUM_SLOTS)),
-        lean=int(np.clip(np.round(a[10]), -1, 1)), use=a[11] > 0, gadget=a[12] > 0,
+        lean=int(np.clip(np.round(a[10]), -1, 1)),
     )
 
 
@@ -237,29 +225,16 @@ class _FPSBase:
         cfg = self.cfg
         if cfg.map_name not in MAPS:
             raise ValueError(f"unknown map {cfg.map_name!r}, choose from {sorted(MAPS)}")
-        if cfg.mode not in MAPS[cfg.map_name][2]:
-            cfg.map_name, cfg.mode = resolve_map_mode(cfg.map_name, cfg.mode)
+        for key in (cfg.learner_loadout, cfg.bot_loadout):
+            if key != "random" and key not in LOADOUT_BY_KEY:
+                raise ValueError(f"unknown loadout {key!r}, choose from {sorted(LOADOUT_BY_KEY)} or 'random'")
         n = cfg.team_size
-        rng = np.random.default_rng(cfg.seed)
-        primaries = []
-        for aid in range(2 * n):
-            if cfg.bot_primaries == "mixed":
-                primaries.append(random_primary(rng))
-            else:
-                primaries.append(cfg.bot_primaries)
-        for aid in controlled:
-            primaries[aid] = cfg.learner_primary
-        assert all(p in PRIMARY_CHOICES for p in primaries)
+        loadouts = [cfg.learner_loadout if aid in controlled else cfg.bot_loadout for aid in range(2 * n)]
         self.world = World(MatchConfig(
-            team_size=n, map_name=cfg.map_name, mode=cfg.mode, mode_params=dict(cfg.mode_params),
-            tick_rate=cfg.tick_rate, kill_limit=cfg.kill_limit,
-            time_limit=cfg.time_limit, friendly_fire=cfg.friendly_fire, respawn=cfg.respawn,
-            primaries=primaries, seed=cfg.seed,
+            team_size=n, map_name=cfg.map_name, mode_params=dict(cfg.mode_params),
+            tick_rate=cfg.tick_rate, friendly_fire=cfg.friendly_fire, loadouts=loadouts, seed=cfg.seed,
         ))
         self.controlled = list(controlled)
-        # bots that only shop for the learners (bomb mode economy)
-        self._buyers = [Bot(self.world, aid, cfg.bot_difficulty, seed=aid) for aid in self.controlled] \
-            if cfg.learner_auto_buy and getattr(self.world.mode, "economy", False) else []
         self.bots = [Bot(self.world, a.id, cfg.bot_difficulty, seed=(cfg.seed or 0) * 101 + a.id)
                      for a in self.world.agents if a.id not in self.controlled]
         if not cfg.teammate_bots:
@@ -352,48 +327,15 @@ class _FPSBase:
                     total += r.win
                 elif e["winner"] >= 0:
                     total += r.lose
-            elif t == "round_end":
+            elif t == "round_end" and e["team"] >= 0:
                 total += r.round_win if e["team"] == me.team else r.round_lose
                 stats["rounds_won"] = stats.get("rounds_won", 0) + int(e["team"] == me.team)
-            elif t == "point_captured":
-                if e["team"] == me.team:
-                    on = me.alive and self.world.mode.in_zone(me.pos, self.world.mode.points[e["point"]])
-                    total += r.capture * (1.0 if on else 0.3)
-                    stats["captures"] = stats.get("captures", 0) + int(on)
-                elif e["team"] >= 0:
-                    total += r.point_lost
-            elif t == "bomb_planted" and e["agent"] == aid:
-                total += r.plant
-                stats["plants"] = stats.get("plants", 0) + 1
-            elif t == "bomb_defused" and e["agent"] == aid:
-                total += r.defuse
-                stats["defuses"] = stats.get("defuses", 0) + 1
-        dt = self._last_dt
-        m = self.world.mode
-        if r.hold and m.name == "dom" and m.active >= 0 and m.present[me.team] and not m.present[1 - me.team]:
-            total += r.hold * dt
-        if r.in_objective and me.alive and self._in_objective(me):
-            total += r.in_objective * dt
         return float(total), stats
-
-    def _in_objective(self, a) -> bool:
-        m = self.world.mode
-        if m.name == "dom":
-            return m.active >= 0 and m.in_zone(a.pos, m.points[m.active])
-        if hasattr(m, "site_at"):
-            b = m.bomb
-            if m.side(a.team) == 1 and b is not None and b["state"] == "planted":
-                return float(np.linalg.norm(a.pos - np.asarray(b["pos"]))) < 2.0
-            return m.site_at(a.pos) >= 0
-        return False
 
     def _bot_actions(self) -> dict:
         return {b.aid: b.act() for b in self.bots}
 
     def _tick(self, actions: dict) -> list:
-        for b in self._buyers:
-            if b.agent.alive:
-                b.maybe_buy(b.agent)
         acts = self._bot_actions()
         acts.update(actions)
         events = self.world.step(acts)
@@ -420,8 +362,6 @@ class _FPSBase:
         self.world.reset(seed)
         self.state_obs.reset()
         for b in self.bots:
-            b.reset(seed * 101 + b.aid)
-        for b in self._buyers:
             b.reset(seed * 101 + b.aid)
         self._steps = 0
         self._last_dt = 0.0

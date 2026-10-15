@@ -7,7 +7,7 @@ import numpy as np
 
 from . import config as C
 from .sim import Agent, World, angles_to, wrap180
-from .weapons import NUM_SLOTS, SLOT_FIRE, SLOT_FLASH, SLOT_FRAG, SLOT_SMOKE
+from .weapons import LOADOUT_KEYS, NUM_SLOTS, SLOT_FIRE, SLOT_FLASH, SLOT_FRAG, SLOT_SMOKE
 
 SELF_FEATURES = [
     "alive", "hp", "pos_x", "pos_y", "pos_z", "vel_fwd", "vel_right", "vel_up",
@@ -15,14 +15,14 @@ SELF_FEATURES = [
     *[f"slot_{i}" for i in range(1, NUM_SLOTS + 1)],
     *[f"has_{i}" for i in range(1, NUM_SLOTS + 1)],
     "mag", "reserve", "reloading", "ads", "ready", "frags", "smokes", "flashes", "molotovs",
-    "punch_pitch", "punch_yaw", "spread", "protected",
+    "punch_pitch", "punch_yaw", "spread",
     "dmg_dir_fwd", "dmg_dir_right", "dmg_recency", "time_left", "score_diff",
-    "lean", "busy", "frozen", "armor", "money", "view_mode",
+    "lean", "frozen", *[f"loadout_{k}" for k in LOADOUT_KEYS],
 ]
 ENEMY_FEATURES = ["present", "visible", "dx", "dy", "dz", "dist", "yaw_err", "pitch_err", "hp"]
 ALLY_FEATURES = ["present", "dx", "dy", "dz", "hp"]
 PROJ_FEATURES = ["present", "dx", "dy", "dz", "is_frag", "fuse_left"]
-OBJECTIVE_SIZE = 12  # GameMode.obs(): mode specific (points / bomb / sites), zeros in TDM
+OBJECTIVE_SIZE = 12  # Elimination.obs(): round state + nearest site
 
 
 class ObsBuilder:
@@ -62,23 +62,11 @@ class ObsBuilder:
         return out
 
     def _score_diff(self, a: Agent) -> float:
-        w = self.world
-        m = w.mode
-        score = w.score
-        if m.name == "dom":
-            lim = m.p["wins_needed"]
-        elif hasattr(m, "win_target"):
-            lim = m.win_target
-        else:
-            lim = w.cfg.kill_limit or 100
-        return (score[a.team] - score[1 - a.team]) / max(lim, 1)
+        score = self.world.score
+        return (score[a.team] - score[1 - a.team]) / max(self.world.mode.p["win_rounds"], 1)
 
     def _time_left(self) -> float:
-        w = self.world
-        m = w.mode
-        if hasattr(m, "time_left"):
-            return min(m.time_left() / 120.0, 1.0)
-        return max(0.0, 1.0 - w.time / w.cfg.time_limit) if w.cfg.time_limit else 1.0
+        return min(self.world.mode.time_left() / 120.0, 1.0)
 
     def _local(self, a: Agent, vec):
         yr = math.radians(a.yaw)
@@ -112,10 +100,10 @@ class ObsBuilder:
             float(smoke.mag) if smoke is not None and smoke.spec.kind == "grenade" else 0.0,
             float(flash.mag) if flash is not None and flash.spec.kind == "grenade" else 0.0,
             float(fire.mag) if fire is not None and fire.spec.kind == "grenade" else 0.0,
-            a.punch[0] / 10.0, a.punch[1] / 10.0, w.current_spread(a) / 10.0, float(w.time < a.protect_until),
+            a.punch[0] / 10.0, a.punch[1] / 10.0, w.current_spread(a) / 10.0,
             df / dn if dmg_age < 2.0 else 0.0, dr / dn if dmg_age < 2.0 else 0.0,
             max(0.0, 1.0 - dmg_age / 2.0), self._time_left(), self._score_diff(a),
-            a.lean, float(a.busy is not None), float(a.frozen), a.armor, a.money / 16000.0, float(a.view_mode),
+            a.lean, float(a.frozen), *[float(a.loadout == k) for k in LOADOUT_KEYS],
         ]
         out[k:k + len(feats)] = feats
         k += len(SELF_FEATURES)

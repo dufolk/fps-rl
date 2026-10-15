@@ -1,2 +1,0 @@
-zm_lostcities.bsp (CrossFire Biochemical Pyramid port)
-Imported with tools/import_bsp.py. Collision rebuilt as boxes; the render mesh is the BSP faces.
