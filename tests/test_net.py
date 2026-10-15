@@ -1,4 +1,5 @@
 """Headless LAN protocol tests (loopback sockets, no rendering)."""
+import collections
 import os
 import socket
 import sys
@@ -399,6 +400,138 @@ def test_lan_r6():
         room.same()
     finally:
         room.close()
+
+
+def _conn():
+    from fpsrl.net.server import ClientConn
+    c = ClientConn.__new__(ClientConn)
+    c.inputs, c.ack, c.debt, c.held, c.folded = collections.deque(), 0, 0, 0, 0
+    return c
+
+
+def _inp(seq, b=0, sw=0):
+    return {"seq": seq, "mf": 1.0, "mr": 0.0, "yaw": 0.0, "pitch": 0.0, "b": b, "sw": sw, "rt": 0.0,
+            "lean": 0, "vy": 0.0, "vp": 0.0}
+
+
+def test_inputs_applied_once():
+    """Late input -> the agent holds; the input is applied later, never duplicated or dropped."""
+    from fpsrl.net.server import JITTER_DEPTH, MAX_BACKLOG
+    c = _conn()
+    c.inputs.append(_inp(1))
+    assert [i["seq"] for i in c.take_inputs()] == [1]
+    assert c.take_inputs() == [] and c.debt == 1  # late: hold instead of repeating input 1
+    seq = 1
+    applied = []
+    for _ in range(JITTER_DEPTH + 1):  # the late inputs arrive in a burst
+        seq += 1
+        c.inputs.append(_inp(seq))
+    while c.inputs:
+        applied += [i["seq"] for i in c.take_inputs()]
+    assert applied == list(range(2, seq + 1)) and c.debt == 0
+    # a client that runs ahead without having been held only gets folded past the backlog
+    for k in range(MAX_BACKLOG + 3):
+        c.inputs.append(_inp(100 + k, b=1 if k == 0 else 0, sw=3 if k == 1 else 0))
+    first = c.take_inputs()
+    assert len(first) == 1 and c.folded == 3 and first[0]["b"] & 1 and first[0]["sw"] == 3
+    assert c.ack == first[0]["seq"]
+
+
+def test_multi_input_tick_matches_client():
+    """Two inputs in one host tick move the host exactly like two client ticks."""
+    from fpsrl.net.protocol import inputs_to_actions
+    host = World(MatchConfig(team_size=1, seed=4))
+    client = World(MatchConfig(team_size=1, seed=4))
+    a, b = host.agents[0], client.agents[0]
+    yaws = [(a.yaw + 20.0 * k) % 360.0 for k in range(1, 5)]
+    for y in yaws:  # client: one input per tick
+        b.yaw = y
+        client._move(b, Action(move_forward=1.0), client.dt)
+    inps = [dict(_inp(k + 1), yaw=y) for k, y in enumerate(yaws)]
+    host.step({0: inputs_to_actions(inps[:2], a)})
+    host.step({0: inputs_to_actions(inps[2:], a)})
+    host.step({0: []})  # held tick: no movement input at all
+    assert abs(((a.yaw - yaws[-1] + 180) % 360) - 180) < 1e-6
+    assert (abs(a.pos[:2] - b.pos[:2]) < 0.2).all(), (a.pos, b.pos)
+
+
+def test_snapshot_merge_keeps_events():
+    from fpsrl.net.server import merge_snapshots
+    old = {"t": "s", "w": {"time": 1.0, "destruct": [1, 2]}, "ev": [{"type": "kill"}], "ack": [[1, 5]]}
+    new = {"t": "s", "w": {"time": 1.1}, "ev": [{"type": "shot"}], "ack": [[1, 7]]}
+    m = merge_snapshots(old, new)
+    assert m["w"]["time"] == 1.1 and m["ack"] == [[1, 7]] and m["w"]["destruct"] == [1, 2]
+    assert [e["type"] for e in m["ev"]] == ["kill", "shot"]
+
+
+def test_slow_link_merges_snapshots():
+    """A client that reads slower than the host sends gets fewer, newer snapshots (not a growing
+    delay), and every event still arrives exactly once, in order."""
+    server = NetServer("slow", port=0)
+    try:
+        def pump():
+            for kind, conn, _ in server.poll():
+                if kind == "join":
+                    conn.aid = 0
+                    conn.send({"t": "welcome", "aid": 0})
+                    return conn
+        holder = []
+        threading.Thread(target=lambda: holder.append(_wait(pump)), daemon=True).start()
+        client = NetClient("127.0.0.1", server.port, "Slow", timeout=2.0)
+        _wait(lambda: holder)
+        blob = "x" * 4000  # snapshot-sized payload so the small send buffer fills up
+        n = 600
+        for k in range(n):
+            server.broadcast_snapshot({"t": "s", "w": {"time": k, "pad": blob}, "ev": [{"type": "e", "k": k}],
+                                       "ack": [[0, k]]})
+        snaps = []
+        _wait(lambda: snaps.extend(m for m in client.poll() if m["t"] == "s") or
+              (snaps and snaps[-1]["w"]["time"] == n - 1), timeout=10.0)
+        assert [e["k"] for s in snaps for e in s["ev"]] == list(range(n))
+        assert [s["w"]["time"] for s in snaps] == sorted(s["w"]["time"] for s in snaps)
+        assert len(snaps) < n, "nothing was merged; the queue would grow without bound on a slow link"
+        client.close()
+    finally:
+        server.close()
+
+
+def test_interp_clock_smooth_under_jitter():
+    """Bursty arrivals must not make the playback clock jump or run backwards."""
+    import random
+    from fpsrl.net.clock import InterpClock
+    rng = random.Random(0)
+    clk = InterpClock()
+    arrivals = []
+    for k in range(300):  # 30 Hz snapshots, 50 ms latency, jitter and some 60-90 ms spikes
+        st = k / 30.0
+        d = 0.05 + rng.expovariate(1 / 0.004) + (rng.uniform(0.03, 0.09) if rng.random() < 0.05 else 0.0)
+        arrivals.append((st + d, st))
+    arrivals.sort()
+    i, t, prev, steps, newest = 0, 0.0, None, [], -1.0
+    while t < 9.5:
+        t += 1 / 144
+        while i < len(arrivals) and arrivals[i][0] <= t:
+            clk.on_snapshot(arrivals[i][1], arrivals[i][0])
+            newest = max(newest, arrivals[i][1])
+            i += 1
+        rt = clk.advance(t)
+        if rt is not None and prev is not None and t > 2.0:
+            steps.append(rt - prev)
+            assert rt <= newest + 0.07, "played too far past the data"
+        prev = rt
+    assert min(steps) > 0.0
+    assert max(steps) < (1 / 144) * 1.1 and min(steps) > (1 / 144) * 0.9
+    assert InterpClock.MIN_DELAY <= clk.delay <= InterpClock.MAX_DELAY
+
+
+def test_snapshot_position_precision():
+    """Positions must survive the wire finer than collision's 0.1 mm skin, or a replay can start
+    inside a floor box and be pushed out the far side (a teleport)."""
+    w = World(MatchConfig(team_size=1, seed=2))
+    a = w.agents[0]
+    a.pos[:] = (1.23456789, -2.3456789, 4.8001)
+    s = agent_state(a)
+    assert all(abs(x - y) < 2e-5 for x, y in zip(s[0], a.pos))
 
 
 if __name__ == "__main__":

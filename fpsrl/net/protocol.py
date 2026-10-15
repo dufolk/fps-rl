@@ -17,7 +17,7 @@ import numpy as np
 from ..sim import Action, Fire, Projectile, Smoke, WeaponState
 from ..weapons import NUM_SLOTS, PRIMARY_CHOICES, WEAPONS
 
-VERSION = 4
+VERSION = 5  # 5: inputs applied once per host tick, 30 Hz merged snapshots, 0.01 mm positions
 DEFAULT_PORT = 47777
 DISCOVERY_PORT = 47778
 DISCOVER_MAGIC = b"FPSRL-DISCOVER-1"
@@ -110,6 +110,23 @@ def input_to_action(inp: dict, agent) -> Action:
                   use=bool(b & B_USE), gadget=bool(b & B_GADGET))
 
 
+def inputs_to_actions(inps: list, agent) -> list:
+    """Actions for several inputs applied in one host tick: each look delta is taken from the
+    angles the previous input leaves the agent at, not from the current ones."""
+    if len(inps) <= 1:
+        return [input_to_action(i, agent) for i in inps]
+    yaw, pitch = agent.yaw, agent.pitch
+    out = []
+    for inp in inps:
+        act = input_to_action(inp, agent)
+        if not agent.view_mode:
+            act.look_yaw = (inp["yaw"] - yaw + 180.0) % 360.0 - 180.0
+            act.look_pitch = inp["pitch"] - pitch
+            yaw, pitch = inp["yaw"], inp["pitch"]
+        out.append(act)
+    return out
+
+
 def apply_client_cmd(world, agent, msg: dict) -> bool:
     """Host side of a client {"t": "cmd"} message: primary / loadout pick, buy, operator pick."""
     c = msg.get("c")
@@ -140,7 +157,10 @@ def agent_state(a) -> list:
         | (F_WALK * a.walking) | (F_FROZEN * a.frozen)
     inv = [[s, a.inv[s].name, a.inv[s].mag, a.inv[s].reserve] for s in sorted(a.inv)]
     busy = None if a.busy is None else [a.busy[0], _r(a.busy[1]), _r(a.busy[2])]
-    return [[_r(a.pos[0]), _r(a.pos[1]), _r(a.pos[2])], [_r(a.vel[0]), _r(a.vel[1]), _r(a.vel[2])],
+    # positions need finer than the 0.1 mm gap collision leaves to walls / floors: at 1 mm a rounded
+    # position can sit inside a box, and replaying an input from there pushes the player out at the
+    # far side of that box (a visible teleport)
+    return [[_r(a.pos[0], 5), _r(a.pos[1], 5), _r(a.pos[2], 5)], [_r(a.vel[0]), _r(a.vel[1]), _r(a.vel[2])],
             _r(a.yaw, 2), _r(a.pitch, 2), _r(a.height), int(flags), _r(a.hp, 1), a.slot, a.last_slot, inv,
             _r(a.reload_until), _r(a.ready_at), _r(a.next_fire), _r(a.protect_until), _r(a.spawn_time),
             _r(a.punch[0]), _r(a.punch[1]), _r(a.bloom), a.kills, a.deaths, a.headshots, a.killer,

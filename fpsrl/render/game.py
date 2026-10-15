@@ -20,8 +20,9 @@ from panda3d.core import Filename, KeyboardButton, MouseButton, WindowProperties
 from ..bots import Bot
 from ..maps import MAPS, resolve_map_mode
 from ..profile import SENSITIVITY_STEP, clamp_sensitivity, graphics_opts
-from ..net.protocol import (B_ALT, B_FIRE, B_RELOAD, apply_agent, apply_client_cmd, apply_world, encode_input,
-                            input_to_action, world_state)
+from ..net.clock import InterpClock
+from ..net.protocol import (apply_agent, apply_client_cmd, apply_world, encode_input, inputs_to_actions,
+                            world_state)
 from ..sim import IDLE, TEAM_NAMES, Action, MatchConfig, World
 from ..weapons import LOADOUT_BY_KEY, NUM_SLOTS, PRIMARY_CHOICES, random_primary
 from .ime import hold as hold_ime
@@ -410,6 +411,7 @@ class LocalSession:
     """Single player against bots, optionally hosting a LAN room (`host={"room":..., "port":...}`)."""
 
     RESTART_DELAY = 10.0
+    SNAP_EVERY = 2  # host ticks per snapshot: 30 Hz, half the upload of sending every tick
 
     def __init__(self, viewer: Viewer, settings, team_size=4, difficulty="normal", team=0, primary="ak47",
                  kill_limit=60, time_limit=420.0, seed=None, autoplay=False, host=None, on_escape=None,
@@ -562,34 +564,25 @@ class LocalSession:
             self.viewer.hud.set_info(text)
 
     def _remote_actions(self):
+        """Each client input is applied exactly once (see `ClientConn.take_inputs`); an agent
+        whose input is late gets `[]` and holds for this tick instead of repeating the last one."""
         acts = {}
         w = self.world
         for c in self.server.players():
-            q = c.inputs
-            while len(q) > 4:  # client ran ahead: merge the oldest input into the next one
-                old = q.popleft()
-                nxt = q[0]
-                if old["sw"] and not nxt["sw"]:
-                    nxt["sw"] = old["sw"]
-                nxt["b"] |= old["b"] & (B_FIRE | B_ALT | B_RELOAD)
-            if q:
-                inp = q.popleft()
-                c.last_input = inp
-                c.ack = inp["seq"]
-            elif c.last_input is not None:
-                inp = dict(c.last_input, sw=0)
-            else:
-                continue
-            acts[c.aid] = input_to_action(inp, w.agents[c.aid])
-            w.rewind[c.aid] = inp["rt"]
+            inps = c.take_inputs()
+            acts[c.aid] = inputs_to_actions(inps, w.agents[c.aid])
+            if inps:
+                w.rewind[c.aid] = inps[-1]["rt"]
         return acts
 
     def _broadcast(self):
         w = self.world
+        if w.tick % self.SNAP_EVERY and not w.done:
+            return
         events = w.events_since(self.sent_seq)
         self.sent_seq = w.seq
-        self.server.broadcast({"t": "s", "w": world_state(w, self.sent_destruct), "ev": events,
-                               "ack": [[c.aid, c.ack] for c in self.server.players()]})
+        self.server.broadcast_snapshot({"t": "s", "w": world_state(w, self.sent_destruct), "ev": events,
+                                        "ack": [[c.aid, c.ack] for c in self.server.players()]})
         self.sent_destruct = w.destruct.version
 
     # ------------------------------------------------------------------ lifecycle
@@ -674,7 +667,9 @@ def predicted_motion(agent, act: Action) -> Action:
 
 # ----------------------------------------------------------------------------- LAN client
 class ClientSession:
-    INTERP = 0.05  # remote players are shown this far in the past (seconds)
+    EXTRAPOLATE = 0.06  # when a snapshot is late, keep remote players moving this long at most
+    SMOOTH_SNAP = 1.5  # own-position corrections up to this many metres are blended, larger ones snap
+    SMOOTH_TIME = 0.1  # seconds for a blended correction to fade out
 
     def __init__(self, viewer: Viewer, settings, client, on_escape=None, on_disconnect=None, autoplay=False):
         wel = client.welcome
@@ -715,7 +710,9 @@ class ClientSession:
         self.pending: collections.deque = collections.deque()
         self.buffers = {a.id: collections.deque(maxlen=90) for a in w.agents if a.id != self.aid}
         self.snap_time = st["time"]
-        self.snap_recv = time.perf_counter()
+        self.clock = InterpClock()
+        self.clock.on_snapshot(st["time"], time.perf_counter())
+        self.render_t = self.clock.peek(time.perf_counter())
         self.adopt_look = False
         self.acc = 0.0
         self.bot = Bot(w, self.aid, "hard", seed=self.aid) if autoplay else None
@@ -752,10 +749,11 @@ class ClientSession:
 
     # ------------------------------------------------------------------ network
     def _render_time(self):
-        est = self.snap_time + min(time.perf_counter() - self.snap_recv, 0.1)
-        return est - self.INTERP
+        """Host time the remote players are currently shown at (sent with every input so the host
+        can rewind hits to exactly what this client saw)."""
+        return self.render_t
 
-    def _on_snapshot(self, msg):
+    def _on_snapshot(self, msg, now=None):
         w = self.world
         for e in msg["ev"]:
             w.seq += 1
@@ -765,7 +763,9 @@ class ClientSession:
                 self.adopt_look = True
         st = msg["w"]
         me = w.agents[self.aid]
+        was_alive, before = me.alive, me.pos.copy()
         apply_world(w, st, own=self.aid)
+        teleport = self.adopt_look
         if self.adopt_look:
             me.yaw, me.pitch = st["agents"][self.aid][2], st["agents"][self.aid][3]
             me.prev_pos[:] = me.pos
@@ -774,15 +774,42 @@ class ClientSession:
         t = st["time"]
         for aid, buf in self.buffers.items():
             s = st["agents"][aid]
-            buf.append((t, s[0], s[4], s[2], s[3]))
+            buf.append((t, s[0], s[4], s[2], s[3], s[1]))
         self.snap_time = t
-        self.snap_recv = time.perf_counter()
+        self.clock.on_snapshot(t, time.perf_counter() if now is None else now)
+        self._reconcile(msg, t)
+        self._smooth_correction(me.pos - before, teleport or not (was_alive and me.alive))
+
+    def _smooth_correction(self, delta, snap):
+        """Hide a small prediction correction: the sim position jumps to the corrected one at once
+        (so the next prediction starts from it), the camera keeps an offset that fades out."""
+        off = self.viewer.pov_smooth
+        dist = float((delta ** 2).sum()) ** 0.5
+        if snap or dist > self.SMOOTH_SNAP:
+            off[:] = 0.0
+            return
+        if dist > 1e-4:
+            off -= delta
+            self.world.agents[self.aid].prev_pos[:] += delta
+
+    def _reconcile(self, msg, t):
+        """Server position at the last acknowledged input, then replay the inputs it has not
+        applied yet."""
+        w = self.world
+        me = w.agents[self.aid]
         ack = 0
         for aid, seq in msg.get("ack", ()):
             if aid == self.aid:
                 ack = seq
         while self.pending and self.pending[0][0] <= ack:
             self.pending.popleft()
+        if me.alive and w._overlaps(me.pos, me.height).any():
+            # never replay from inside a box: collision would push us out at its far side
+            for lift in (1e-3, 1e-2):
+                p = me.pos + (0.0, 0.0, lift)
+                if not w._overlaps(p, me.height).any():
+                    me.pos[:] = p
+                    break
         if me.alive and self.pending:
             yaw_now, t_save = me.yaw, w.time
             w.muted = True
@@ -793,8 +820,12 @@ class ClientSession:
             w.muted = False
             me.yaw, w.time = yaw_now, t_save
 
-    def _interpolate(self):
-        rt = self._render_time()
+    def _interpolate(self, now=None):
+        now = time.perf_counter() if now is None else now
+        rt = self.clock.advance(now)
+        if rt is None:
+            return
+        self.render_t = rt
         w = self.world
         for aid, buf in self.buffers.items():
             if not buf:
@@ -808,12 +839,15 @@ class ClientSession:
                     break
                 prev = item
             if cur is None or cur is prev:
-                t, pos, h, yaw, pitch = buf[-1]
-                a.pos[:] = pos
+                # past the newest snapshot (a late packet): coast briefly on its velocity, horizontally
+                # only so nobody sinks into the floor; before the oldest one: show that one
+                t, pos, h, yaw, pitch, vel = buf[-1] if cur is None else cur
+                ahead = max(0.0, min(rt - t, self.EXTRAPOLATE)) if a.alive and cur is None else 0.0
+                a.pos[:] = (pos[0] + vel[0] * ahead, pos[1] + vel[1] * ahead, pos[2])
                 a.height, a.yaw, a.pitch = h, yaw, pitch
             else:
-                t0, p0, h0, y0, q0 = prev
-                t1, p1, h1, y1, q1 = cur
+                t0, p0, h0, y0, q0, _ = prev
+                t1, p1, h1, y1, q1, _ = cur
                 k = (rt - t0) / max(t1 - t0, 1e-6)
                 if sum((b - c) ** 2 for b, c in zip(p0, p1)) > 9.0:  # respawn teleport
                     k = 1.0
@@ -837,7 +871,9 @@ class ClientSession:
                 self.pending.clear()
                 for buf in self.buffers.values():
                     buf.clear()
+                self.clock.reset()
                 self.viewer.bind(w, self.aid)
+                self.viewer.pov_smooth[:] = 0.0
                 self._apply_roster()
             elif t == "bye":
                 if self.on_disconnect is not None:
@@ -877,6 +913,7 @@ class ClientSession:
         if steps == 6:
             self.acc = 0.0
         self._interpolate()
+        self.viewer.pov_smooth *= math.exp(-dt / self.SMOOTH_TIME)
         self.viewer.sync(dt, self.acc / w.dt)
         self.ctrl.update_fps(dt)
 

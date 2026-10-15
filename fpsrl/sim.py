@@ -498,7 +498,11 @@ class World:
 
     # ------------------------------------------------------------------ main step
     def step(self, actions: dict | None = None) -> list[dict]:
-        """Advance one tick. `actions` maps agent id -> Action (missing = idle)."""
+        """Advance one tick. `actions` maps agent id -> Action (missing = idle).
+
+        A list of Actions runs that agent's update once per entry: a network host uses this to apply
+        each client input exactly once (`[]` holds the agent while its input is late, two entries
+        catch up), so the client's prediction stays in step with the host."""
         actions = actions or {}
         self.tick_events = []
         if self.done:
@@ -509,7 +513,12 @@ class World:
             a.prev_punch[:] = a.punch
         self.mode.pre_step(dt)
         for a in self.agents:
-            self._update_agent(a, actions.get(a.id, IDLE), dt)
+            act = actions.get(a.id, IDLE)
+            if isinstance(act, list):
+                for sub in act:
+                    self._update_agent(a, sub, dt)
+            else:
+                self._update_agent(a, act, dt)
         self._separate_agents()
         self._update_melee()
         self._update_projectiles(dt)

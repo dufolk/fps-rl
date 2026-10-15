@@ -274,6 +274,8 @@ class Viewer:
         self.proj_nodes: dict[int, NodePath] = {}
         self.pov = pov
         self.owner = pov  # human being played; pov may follow a teammate while spectating
+        # fading offset a network client adds to the owner's shown position to hide prediction fixes
+        self.pov_smooth = np.zeros(3)
         self.spectate_id = None
         self.third_person = False
         self.watch = False          # free spectator: every agent is a bot
@@ -854,13 +856,17 @@ class Viewer:
             self.grade_quad.setShaderInput("kLow", Vec4(low, 0, 0, 0))
 
     # ------------------------------------------------------------------ sync
+    def _shown_pos(self, a, alpha):
+        pos = a.prev_pos + (a.pos - a.prev_pos) * alpha
+        return pos + self.pov_smooth if a.id == self.owner else pos
+
     def _sync_soldiers(self, dt, alpha):
         w = self.world
         for a in w.agents:
             sv = self.soldiers[a.id]
             sv.set_kind(getattr(a, "role", "human"), a.team)
             m = sv.model
-            pos = a.prev_pos + (a.pos - a.prev_pos) * alpha
+            pos = self._shown_pos(a, alpha)
             m.root.setPos(pos[0], pos[1], pos[2])
             if a.alive:
                 if sv.dead_since is not None:
@@ -966,7 +972,7 @@ class Viewer:
             pass
         elif self.first_person_now:
             self.death_cam = None
-            pos = a.prev_pos + (a.pos - a.prev_pos) * alpha
+            pos = self._shown_pos(a, alpha)
             punch = a.prev_punch + (a.punch - a.prev_punch) * alpha
             off = a.lean_vec()
             cam.setPos(pos[0] + off[0], pos[1] + off[1],
@@ -1013,7 +1019,7 @@ class Viewer:
         crosshair is truthful. Aiming pulls the camera in to the shoulder."""
         w = self.world
         cam = self.base.camera
-        pos = a.prev_pos + (a.pos - a.prev_pos) * alpha
+        pos = self._shown_pos(a, alpha)
         punch = a.prev_punch + (a.punch - a.prev_punch) * alpha
         k = self.tp_ads
         yr = math.radians(a.yaw)

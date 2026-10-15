@@ -11,8 +11,22 @@ import queue
 import socket
 import threading
 
-from .protocol import (DEFAULT_PORT, DISCOVER_MAGIC, DISCOVERY_PORT, VERSION, decode_input, pack, recv_msg,
-                       tune_socket)
+from .protocol import (B_ALT, B_FIRE, B_RELOAD, DEFAULT_PORT, DISCOVER_MAGIC, DISCOVERY_PORT, VERSION,
+                       decode_input, pack, recv_msg, tune_socket)
+
+
+JITTER_DEPTH = 3  # queued inputs a late arrival may leave behind before the host catches up
+MAX_BACKLOG = 8  # queued inputs (~130 ms) beyond which the oldest are folded together
+SEND_BUFFER = 32 * 1024  # small kernel buffer: a backlog stays in `out`, where snapshots can be merged
+
+
+def merge_snapshots(old: dict, new: dict) -> dict:
+    """Fold an unsent snapshot into the next one: the newer state wins, nothing in the event
+    stream or a pending destruction update is lost."""
+    merged = dict(new, ev=list(old.get("ev", ())) + list(new.get("ev", ())))
+    if "destruct" in old.get("w", {}) and "destruct" not in new.get("w", {}):
+        merged["w"] = dict(new["w"], destruct=old["w"]["destruct"])
+    return merged
 
 
 class ClientConn:
@@ -26,24 +40,78 @@ class ClientConn:
         self.skins: dict = {}
         self.aid: int | None = None
         self.inputs: collections.deque = collections.deque()
-        self.last_input: dict | None = None
         self.last_seq = 0
         self.ack = 0
-        self.out: queue.Queue = queue.Queue()
+        self.debt = 0  # host ticks this client's agent was held waiting for a late input
+        self.held = 0  # stats: ticks held / inputs folded because the client ran ahead
+        self.folded = 0
+        # outgoing items: bytes, or a snapshot dict that may still absorb the next snapshot
+        self.out: collections.deque = collections.deque()
+        self.cv = threading.Condition()
         self.open = True
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SEND_BUFFER)
+        except OSError:
+            pass
         threading.Thread(target=self._reader, daemon=True, name=f"net-read-{cid}").start()
         threading.Thread(target=self._writer, daemon=True, name=f"net-write-{cid}").start()
 
+    # ------------------------------------------------------------------ inputs
+    def take_inputs(self) -> list:
+        """Inputs to apply this host tick, each exactly once and in order.
+
+        The client predicts its own movement from exactly these inputs, so the host never invents
+        or drops one under normal jitter: an empty queue holds the agent for a tick (`[]`). The
+        input that arrives late then stays queued, so the queue grows into a small jitter buffer
+        by itself; only past `JITTER_DEPTH` does a tick apply two inputs, and only to repay ticks
+        that were held, so a client cannot run faster than the host clock. A queue past
+        `MAX_BACKLOG` (a fast clock, a speed hack) has its oldest inputs folded together."""
+        q = self.inputs
+        if not q:
+            self.debt = min(self.debt + 1, MAX_BACKLOG)
+            self.held += 1
+            return []
+        while len(q) > MAX_BACKLOG:
+            old = q.popleft()
+            nxt = q[0]
+            if old["sw"] and not nxt["sw"]:
+                nxt["sw"] = old["sw"]
+            nxt["b"] |= old["b"] & (B_FIRE | B_ALT | B_RELOAD)  # button edges survive the fold
+            self.folded += 1
+        out = [q.popleft()]
+        if self.debt and len(q) >= JITTER_DEPTH:
+            self.debt -= 1
+            out.append(q.popleft())
+        self.ack = out[-1]["seq"]
+        return out
+
+    # ------------------------------------------------------------------ outgoing
     def send(self, msg: dict):
         self.send_raw(pack(msg))
 
     def send_raw(self, data: bytes):
-        if not self.open:
-            return
-        if self.out.qsize() > 900:  # ~15 s of snapshots backed up: the client is gone
-            self.close()
-            return
-        self.out.put(data)
+        self._enqueue(data)
+
+    def send_snapshot(self, msg: dict):
+        """Queue a snapshot; if the previous one has not left yet (slow link), merge them so the
+        client always gets the newest state instead of an ever growing delay."""
+        self._enqueue(msg, snapshot=True)
+
+    def _enqueue(self, item, snapshot=False):
+        with self.cv:
+            if not self.open:
+                return
+            if snapshot and self.out and isinstance(self.out[-1], dict):
+                self.out[-1] = merge_snapshots(self.out[-1], item)
+            else:
+                if len(self.out) > 900:  # nothing has left for ages: the client is gone
+                    self.open = False
+                    self.out.clear()
+                    self.out.append(None)
+                    self.cv.notify()
+                    return
+                self.out.append(item)
+            self.cv.notify()
 
     def kick(self, reason: str):
         self.send({"t": "bye", "reason": reason})
@@ -51,10 +119,14 @@ class ClientConn:
 
     def close(self, flush: bool = False):
         """Stop the connection; with `flush` the writer sends what is queued (e.g. a "bye") first."""
-        if not self.open:
-            return
-        self.open = False
-        self.out.put(None)
+        with self.cv:
+            if not self.open:
+                return
+            self.open = False
+            if not flush:
+                self.out.clear()
+            self.out.append(None)
+            self.cv.notify()
         if not flush:
             self._shutdown()
 
@@ -104,10 +176,15 @@ class ClientConn:
 
     def _writer(self):
         while True:
-            data = self.out.get()
+            with self.cv:
+                while not self.out:
+                    self.cv.wait()
+                data = self.out.popleft()
             if data is None:
                 self._shutdown()
                 return
+            if isinstance(data, dict):
+                data = pack(data)
             try:
                 self.sock.sendall(data)
             except OSError:
@@ -192,6 +269,10 @@ class NetServer:
         data = pack(msg)
         for c in self.players():
             c.send_raw(data)
+
+    def broadcast_snapshot(self, msg: dict):
+        for c in self.players():
+            c.send_snapshot(msg)
 
     def close(self):
         self.running = False
